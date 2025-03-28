@@ -1,7 +1,8 @@
 use serde::Serialize;
+use regex::Regex;
 
-#[derive(Debug, Serialize)]
-pub struct ServiceInfo {
+#[derive(Debug, Clone, Serialize)]
+pub struct Service {
     pub name: String,
     pub version: Option<String>,
     pub product: Option<String>,
@@ -9,21 +10,22 @@ pub struct ServiceInfo {
     pub extra_info: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct ScanResult {
-    pub ip: std::net::IpAddr,
-    pub port: u16,
-    pub service: Option<ServiceInfo>,
-}
-
 #[derive(Debug, Clone)]
 pub struct ServicePattern {
     pub name: String,
-    pub regex: regex::Regex,
-    pub probe: Vec<u8>,
-    pub version_regex: Option<regex::Regex>,
-    pub product_regex: Option<regex::Regex>,
-    pub os_regex: Option<regex::Regex>,
-    pub extra_info_regex: Option<regex::Regex>,
-    pub vulnerability_patterns: Option<Vec<(regex::Regex, String)>>,
+    pub regex: Regex,
+    pub probe: String,
+    pub version_regex: Option<Regex>,
+    pub product_regex: Option<Regex>,
+    pub os_regex: Option<Regex>,
+    pub extra_info_regex: Option<Regex>,
+    pub vulnerability_patterns: Vec<Regex>,
+}
+
+#[derive(Debug)]
+pub struct ScanResult {
+    pub ip: std::net::IpAddr,
+    pub port: u16,
+    pub service: Option<Service>,
+    pub raw_response: String,
 }

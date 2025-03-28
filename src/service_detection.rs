@@ -1,129 +1,66 @@
-use anyhow::Result;
-use std::collections::HashMap;
-use std::time::Duration;
+use std::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use regex::Regex;
-use crate::types::ServiceInfo;
+use anyhow::Result;
+use crate::types::Service;
+use crate::patterns::{get_ssh_patterns, get_http_patterns, get_ftp_patterns, get_mysql_patterns, get_redis_patterns};
 
-pub struct ServicePattern {
-    name: String,
-    pattern: Regex,
-    probe: Vec<u8>,
-}
+pub async fn detect_service(stream: &mut TcpStream) -> Result<(Option<Service>, String)> {
+    let mut buffer = [0u8; 1024];
+    let mut raw_response = String::new();
 
-pub struct ServiceDetector {
-    patterns: HashMap<u16, Vec<ServicePattern>>,
-}
+    let mut probe = Vec::new();
+    probe.extend_from_slice(b"HEAD / HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    probe.extend_from_slice(b"SSH-2.0-OpenSSH_8.2p1\r\n");
+    probe.extend_from_slice(b"USER anonymous\r\n");
+    probe.extend_from_slice(b"\x4a\x00\x00\x00\x0a\x35\x2e\x35\x2e\x35");
+    probe.extend_from_slice(b"PING\r\n");
 
-impl ServiceDetector {
-    pub fn new() -> Self {
-        let mut patterns = HashMap::new();
+    stream.write_all(&probe).await?;
+    stream.flush().await?;
 
-        // HTTP
-        patterns.insert(80, vec![
-            ServicePattern {
-                name: "HTTP".to_string(),
-                pattern: Regex::new(r"^HTTP/\d\.\d").unwrap(),
-                probe: b"GET / HTTP/1.0\r\n\r\n".to_vec(),
+    let mut response = Vec::new();
+    let mut total_read = 0;
+    let timeout = std::time::Duration::from_secs(2);
+
+    while total_read < buffer.len() {
+        match tokio::time::timeout(timeout, stream.read(&mut buffer[total_read..])).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(n)) => {
+                total_read += n;
+                response.extend_from_slice(&buffer[..n]);
             }
-        ]);
-
-        // HTTPS
-        patterns.insert(443, vec![
-            ServicePattern {
-                name: "HTTPS".to_string(),
-                pattern: Regex::new(r"^\x16\x03").unwrap(),
-                probe: vec![],
-            }
-        ]);
-
-        // SSH
-        patterns.insert(22, vec![
-            ServicePattern {
-                name: "SSH".to_string(),
-                pattern: Regex::new(r"^SSH-\d\.\d").unwrap(),
-                probe: vec![],
-            }
-        ]);
-
-        // FTP
-        patterns.insert(21, vec![
-            ServicePattern {
-                name: "FTP".to_string(),
-                pattern: Regex::new(r"^220.*FTP").unwrap(),
-                probe: vec![],
-            }
-        ]);
-
-        // SMTP
-        patterns.insert(25, vec![
-            ServicePattern {
-                name: "SMTP".to_string(),
-                pattern: Regex::new(r"^220.*SMTP").unwrap(),
-                probe: vec![],
-            }
-        ]);
-
-        // DNS
-        patterns.insert(53, vec![
-            ServicePattern {
-                name: "DNS".to_string(),
-                pattern: Regex::new(r"^\x00\x00").unwrap(),
-                probe: vec![],
-            }
-        ]);
-
-        Self { patterns }
+            Ok(Err(e)) if e.kind() == io::ErrorKind::WouldBlock => break,
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => break,
+        }
     }
 
-    pub async fn detect_service(&self, mut stream: TcpStream, port: u16, _enhanced: bool) -> Result<Option<ServiceInfo>> {
-        if let Some(patterns) = self.patterns.get(&port) {
-            for pattern in patterns {
-                if !pattern.probe.is_empty() {
-                    stream.write_all(&pattern.probe).await?;
-                }
+    if !response.is_empty() {
+        raw_response = String::from_utf8_lossy(&response).to_string();
+    }
 
-                let mut buf = vec![0; 1024];
-                match tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf)).await {
-                    Ok(Ok(n)) if n > 0 => {
-                        let response = String::from_utf8_lossy(&buf[..n]);
-                        if pattern.pattern.is_match(&response) {
-                            return Ok(Some(ServiceInfo {
-                                name: pattern.name.clone(),
-                                version: extract_version(&response),
-                                product: extract_product(&response),
-                                os_type: extract_os(&response),
-                                extra_info: Some(response.to_string()),
-                            }));
-                        }
-                    }
-                    _ => continue,
-                }
+    let patterns = [
+        get_ssh_patterns(),
+        get_http_patterns(),
+        get_ftp_patterns(),
+        get_mysql_patterns(),
+        get_redis_patterns(),
+    ];
+
+    for pattern_group in patterns.iter() {
+        for pattern in pattern_group {
+            if pattern.regex.is_match(&raw_response) {
+                return Ok((Some(Service {
+                    name: pattern.name.clone(),
+                    version: None,
+                    product: None,
+                    os_type: None,
+                    extra_info: None,
+                }), raw_response));
             }
         }
-
-        Ok(None)
     }
-}
 
-fn extract_version(response: &str) -> Option<String> {
-    let version_pattern = Regex::new(r"(?i)version[:\s]+([^\s]+)").unwrap();
-    version_pattern.captures(response)
-        .and_then(|caps| caps.get(1))
-        .map(|m| m.as_str().to_string())
-}
-
-fn extract_product(response: &str) -> Option<String> {
-    let product_pattern = Regex::new(r"(?i)server:\s+([^\r\n]+)").unwrap();
-    product_pattern.captures(response)
-        .and_then(|caps| caps.get(1))
-        .map(|m| m.as_str().to_string())
-}
-
-fn extract_os(response: &str) -> Option<String> {
-    let os_pattern = Regex::new(r"(?i)\((.*?)\)").unwrap();
-    os_pattern.captures(response)
-        .and_then(|caps| caps.get(1))
-        .map(|m| m.as_str().to_string())
+    Ok((None, raw_response))
 }

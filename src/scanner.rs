@@ -1,138 +1,165 @@
-use anyhow::Result;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::ops::RangeInclusive;
+use std::time::Duration;
 use tokio::net::TcpStream;
-use tokio::time::Duration;
+use tokio::time::timeout;
 use indicatif::{ProgressBar, ProgressStyle};
-use serde_json;
-use crate::service_detection::ServiceDetector;
+use futures::stream::{self, StreamExt};
+use anyhow::Result;
+use crossbeam_channel::bounded;
 use crate::types::ScanResult;
+use crate::service_detection::detect_service;
+
+const MAX_RETRIES: u32 = 2;
+const RETRY_DELAY: u64 = 500;
+const CHUNK_SIZE: usize = 1000;
+const SUBNET_CHUNK_SIZE: usize = 100;
 
 pub struct Scanner {
-    target_ips: Vec<IpAddr>,
-    start_port: u16,
-    end_port: u16,
+    targets: Vec<IpAddr>,
+    port_range: RangeInclusive<u16>,
     concurrency: usize,
-    timeout: Duration,
-    service_detector: Option<Arc<ServiceDetector>>,
-    output_format: String,
+    timeout: u64,
+    service_detection: bool,
 }
 
 impl Scanner {
     pub fn new(
-        target_ips: Vec<IpAddr>,
-        start_port: u16,
-        end_port: u16,
+        targets: Vec<IpAddr>,
+        port_range: RangeInclusive<u16>,
         concurrency: usize,
-        timeout: Duration,
-        service_detector: Option<Arc<ServiceDetector>>,
-        output_format: String,
+        timeout: u64,
+        service_detection: bool,
     ) -> Self {
         Self {
-            target_ips,
-            start_port,
-            end_port,
+            targets,
+            port_range,
             concurrency,
             timeout,
-            service_detector,
-            output_format,
+            service_detection,
         }
     }
 
-    pub async fn run(&self) -> Result<Vec<ScanResult>> {
-        let mut results = Vec::new();
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(self.concurrency));
-        let mut handles = Vec::new();
+    async fn try_connect(addr: SocketAddr, timeout_ms: u64) -> Result<Option<TcpStream>> {
+        for retry in 0..MAX_RETRIES {
+            match timeout(
+                Duration::from_millis(timeout_ms),
+                TcpStream::connect(addr),
+            ).await {
+                Ok(Ok(stream)) => return Ok(Some(stream)),
+                Ok(Err(_)) => return Ok(None),
+                Err(_) if retry < MAX_RETRIES - 1 => {
+                    tokio::time::sleep(Duration::from_millis(RETRY_DELAY)).await;
+                    continue;
+                }
+                Err(_) => return Ok(None),
+            }
+        }
+        Ok(None)
+    }
 
-        let total_tasks = (self.target_ips.len() * ((self.end_port - self.start_port + 1) as usize)) as u64;
-        let pb = ProgressBar::new(total_tasks);
-        pb.set_style(
+    async fn scan_addr(&self, addr: SocketAddr) -> Result<Option<ScanResult>> {
+        if let Ok(Some(mut stream)) = Self::try_connect(addr, self.timeout).await {
+            let mut service = None;
+            let mut raw_response = String::new();
+
+            if self.service_detection {
+                if let Ok((detected_service, response)) = detect_service(&mut stream).await {
+                    service = detected_service;
+                    raw_response = response;
+                }
+            }
+
+            Ok(Some(ScanResult {
+                ip: addr.ip(),
+                port: addr.port(),
+                service,
+                raw_response,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn scan_ip_chunk(&self, ips: &[IpAddr]) -> Vec<ScanResult> {
+        let mut results = Vec::new();
+        let mut addrs = Vec::new();
+
+        for &ip in ips {
+            for port in self.port_range.clone() {
+                addrs.push(SocketAddr::new(ip, port));
+            }
+        }
+
+        let (progress_tx, progress_rx) = bounded::<(SocketAddr, bool)>(1000);
+        let progress_bar = ProgressBar::new(addrs.len() as u64);
+        progress_bar.set_style(
             ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) Scanning {msg}")
                 .unwrap()
                 .progress_chars("#>-"),
         );
 
-        for ip in &self.target_ips {
-            for port in self.start_port..=self.end_port {
-                let sem = semaphore.clone();
-                let ip = *ip;
-                let port = port;
-                let timeout = self.timeout;
-                let service_detector = self.service_detector.clone();
-                let pb = pb.clone();
+        let progress_bar_clone = progress_bar.clone();
+        std::thread::spawn(move || {
+            while let Ok((addr, _)) = progress_rx.recv() {
+                progress_bar_clone.set_message(format!("{}", addr.ip()));
+                progress_bar_clone.inc(1);
+            }
+        });
 
-                let handle = tokio::spawn(async move {
-                    let _permit = sem.acquire().await?;
-                    let result = scan_port(ip, port, timeout, service_detector).await;
-                    pb.inc(1);
+        let mut stream = stream::iter(addrs)
+            .map(|addr| {
+                let progress_tx = progress_tx.clone();
+                async move {
+                    let result = self.scan_addr(addr).await;
+                    let _ = progress_tx.send((addr, result.is_ok()));
                     result
-                });
-
-                handles.push(handle);
-            }
-        }
-
-        for handle in handles {
-            if let Ok(Ok(Some(result))) = handle.await {
-                results.push(result);
-            }
-        }
-
-        pb.finish_with_message("Scan completed!");
-
-        if self.output_format == "json" {
-            println!("{}", serde_json::to_string_pretty(&results)?);
-        } else {
-            for result in &results {
-                println!("{}:{}", result.ip, result.port);
-                if let Some(service) = &result.service {
-                    println!("  Service: {}", service.name);
-                    if let Some(version) = &service.version {
-                        println!("  Version: {}", version);
-                    }
-                    if let Some(product) = &service.product {
-                        println!("  Product: {}", product);
-                    }
-                    if let Some(os_type) = &service.os_type {
-                        println!("  OS Type: {}", os_type);
-                    }
-                    if let Some(extra_info) = &service.extra_info {
-                        println!("  Extra Info: {}", extra_info);
-                    }
                 }
-                println!();
+            })
+            .buffer_unordered(self.concurrency);
+
+        while let Some(result) = stream.next().await {
+            if let Ok(Some(scan_result)) = result {
+                results.push(scan_result);
             }
         }
 
-        Ok(results)
+        progress_bar.finish_and_clear();
+        results
+    }
+
+    pub async fn run(&self) -> Vec<ScanResult> {
+        let mut all_results = Vec::new();
+        let total_ips = self.targets.len();
+        let total_ports = self.port_range.end() - self.port_range.start() + 1;
+        let total_addrs = (total_ports as usize) * total_ips;
+
+        println!("Total addresses to scan: {}", total_addrs);
+
+        let chunk_size = if total_ips > 1 {
+            SUBNET_CHUNK_SIZE
+        } else {
+            CHUNK_SIZE
+        };
+
+        for chunk in self.targets.chunks(chunk_size) {
+            let chunk_results = self.scan_ip_chunk(chunk).await;
+            all_results.extend(chunk_results);
+        }
+
+        all_results
     }
 }
 
-async fn scan_port(
-    ip: IpAddr,
-    port: u16,
-    timeout_duration: Duration,
-    service_detector: Option<Arc<ServiceDetector>>,
-) -> Result<Option<ScanResult>> {
-    let addr = SocketAddr::new(ip, port);
-    
-    match tokio::time::timeout(timeout_duration, TcpStream::connect(addr)).await {
-        Ok(Ok(stream)) => {
-            let mut result = ScanResult {
-                ip,
-                port,
-                service: None,
-            };
-
-            if let Some(detector) = service_detector {
-                if let Ok(Some(service)) = detector.detect_service(stream, port, false).await {
-                    result.service = Some(service);
-                }
-            }
-
-            Ok(Some(result))
+impl Clone for Scanner {
+    fn clone(&self) -> Self {
+        Self {
+            targets: self.targets.clone(),
+            port_range: self.port_range.clone(),
+            concurrency: self.concurrency,
+            timeout: self.timeout,
+            service_detection: self.service_detection,
         }
-        _ => Ok(None),
     }
 } 

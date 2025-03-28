@@ -2,95 +2,174 @@ mod scanner;
 mod service_detection;
 mod utils;
 mod types;
+mod patterns;
 
-use anyhow::Result;
+use std::net::IpAddr;
+use std::str::FromStr;
 use clap::Parser;
-use std::sync::Arc;
-use tokio::time::Duration;
+use anyhow::{Result, Context};
+use std::collections::HashMap;
 use crate::scanner::Scanner;
-use crate::service_detection::ServiceDetector;
-use crate::utils::{get_target_ips, format_scan_result};
+use crate::types::ScanResult;
+use ipnetwork::IpNetwork;
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Target IP address, CIDR notation or domain name
     #[arg(short, long)]
     target: String,
 
-    /// Port range (e.g. 1-1000)
-    #[arg(short, long, default_value = "1-1000")]
-    ports: String,
-
-    /// Number of concurrent scans
     #[arg(short, long, default_value = "1000")]
     concurrency: usize,
 
-    /// Enable service detection
+    #[arg(short, long, default_value = "1000")]
+    timeout: u64,
+
+    #[arg(short, long, default_value = "1-1024")]
+    ports: String,
+
     #[arg(short, long)]
     service_detection: bool,
 
-    /// Output format (text or json)
-    #[arg(short, long, default_value = "text")]
-    output_format: String,
-
-    /// Timeout in milliseconds
-    #[arg(short, long, default_value = "1000")]
-    timeout: u64,
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    let args = Args::parse();
-    
-    // Parse port range
-    let (start_port, end_port) = parse_port_range(&args.ports)?;
-    
-    // Get target IPs
-    let target_ips = get_target_ips(&args.target).await?;
-    println!("Starting scan on {} targets...", target_ips.len());
-    
-    // Initialize service detector if needed
-    let service_detector = if args.service_detection {
-        Some(Arc::new(ServiceDetector::new()))
-    } else {
-        None
-    };
-
-    // Create scanner
-    let scanner = Scanner::new(
-        target_ips,
-        start_port,
-        end_port,
-        args.concurrency,
-        Duration::from_millis(args.timeout),
-        service_detector,
-        args.output_format.clone(),
-    );
-
-    // Run scan
-    let results = scanner.run().await?;
-
-    // Print results
-    for result in results {
-        println!("{}", format_scan_result(&result));
-    }
-
-    Ok(())
+    #[arg(short, long)]
+    subnet: bool,
 }
 
 fn parse_port_range(ports: &str) -> Result<(u16, u16)> {
     let parts: Vec<&str> = ports.split('-').collect();
     if parts.len() != 2 {
-        return Err(anyhow::anyhow!("Invalid port range format. Use start-end (e.g. 1-1000)"));
+        return Err(anyhow::anyhow!("Invalid port range format. Use start-end"));
     }
 
-    let start = parts[0].parse::<u16>()?;
-    let end = parts[1].parse::<u16>()?;
+    let start = parts[0].parse::<u16>()
+        .with_context(|| format!("Invalid start port: {}", parts[0]))?;
+    let end = parts[1].parse::<u16>()
+        .with_context(|| format!("Invalid end port: {}", parts[1]))?;
 
-    if start > end || start == 0 || end > 65535 {
-        return Err(anyhow::anyhow!("Invalid port range"));
+    if start > end {
+        return Err(anyhow::anyhow!("Start port cannot be greater than end port"));
     }
 
     Ok((start, end))
+}
+
+fn resolve_target(target: &str, subnet: bool) -> Result<Vec<IpAddr>> {
+    if subnet {
+        if let Ok(network) = IpNetwork::from_str(target) {
+            return Ok(network.iter().collect());
+        }
+    }
+
+    if let Ok(ip) = IpAddr::from_str(target) {
+        return Ok(vec![ip]);
+    }
+
+    Err(anyhow::anyhow!("Invalid target: {}", target))
+}
+
+fn format_scan_result(result: &ScanResult) -> String {
+    let mut output = format!("[+] {}:{} is open", result.ip, result.port);
+    
+    if let Some(service) = &result.service {
+        output.push_str(&format!("\n    Service: {}", service.name));
+        if let Some(version) = &service.version {
+            output.push_str(&format!("\n    Version: {}", version));
+        }
+        if let Some(product) = &service.product {
+            output.push_str(&format!("\n    Product: {}", product));
+        }
+        if let Some(os_type) = &service.os_type {
+            output.push_str(&format!("\n    OS: {}", os_type));
+        }
+        if let Some(extra_info) = &service.extra_info {
+            output.push_str(&format!("\n    Extra Info: {}", extra_info));
+        }
+    }
+    
+    output
+}
+
+fn generate_issue_template(result: &ScanResult) -> String {
+    let fingerprint = if !result.raw_response.is_empty() {
+        STANDARD.encode(result.raw_response.as_bytes())
+    } else {
+        "No raw response available".to_string()
+    };
+
+    format!(
+        "## Service Fingerprint Report\n\n\
+        ### Target Information\n\
+        - IP: {}\n\
+        - Port: {}\n\
+        - Service: {}\n\n\
+        ### Raw Response (Base64)\n\
+        ```\n\
+        {}\n\
+        ```\n\n\
+        ### Additional Information\n\
+        - Scanner Version: {}\n\
+        - Scan Date: {}\n\n\
+        ### Description\n\
+        Please add a description of the service behavior and any additional context.\n",
+        result.ip,
+        result.port,
+        result.service.as_ref().map(|s| s.name.clone()).unwrap_or_else(|| "unknown".to_string()),
+        fingerprint,
+        env!("CARGO_PKG_VERSION"),
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+    )
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let args = Args::parse();
+    let (start_port, end_port) = parse_port_range(&args.ports)?;
+    let targets = resolve_target(&args.target, args.subnet)?;
+
+    println!("Starting scan on {} targets...", targets.len());
+
+    let scanner = Scanner::new(
+        targets,
+        start_port..=end_port,
+        args.concurrency,
+        args.timeout,
+        args.service_detection,
+    );
+
+    let results = scanner.run().await;
+    let mut service_stats: HashMap<String, u32> = HashMap::new();
+
+    for result in &results {
+        if let Some(service) = &result.service {
+            *service_stats.entry(service.name.clone()).or_insert(0) += 1;
+        }
+    }
+
+    println!("\nScan Results:");
+    for result in results {
+        if let Some(service) = result.service {
+            println!("[+] {}:{} is open", result.ip, result.port);
+            println!("    Service: {}", service.name);
+            if let Some(version) = service.version {
+                println!("    Version: {}", version);
+            }
+            if let Some(product) = service.product {
+                println!("    Product: {}", product);
+            }
+            if let Some(os) = service.os_type {
+                println!("    OS: {}", os);
+            }
+        } else {
+            println!("[+] {}:{} is open", result.ip, result.port);
+        }
+    }
+
+    println!("\nService Statistics:");
+    for (service, count) in service_stats {
+        println!("  {}: {}", service, count);
+    }
+
+    Ok(())
 }
