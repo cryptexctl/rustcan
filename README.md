@@ -30,9 +30,9 @@ Scan with service detection:
 rustcan --target example.com --ports 80-443 --service-detection
 ```
 
-Scan subnet with JSON output:
+Scan subnet:
 ```bash
-rustcan --target 192.168.1.0/24 --ports 1-1000 --service-detection --output-format json
+rustcan --target 192.168.1.1 --ports 1-65535 --service-detection --subnet
 ```
 
 ## Options
