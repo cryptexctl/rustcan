@@ -1,127 +1,143 @@
-# Implementation Guide
+# Rustcan Implementation Guide
 
-This guide explains how to build your own port scanner in Rust, using Rustcan as a reference implementation.
+## Core Scanning Functionality
 
-## Basic Concepts
-
-### 1. Port Scanning Fundamentals
-- TCP connection establishment
-- Port states (open, closed, filtered)
-- Network protocols
+### Scanner Implementation
+Located in `scanner.rs`, the scanner module provides:
+- Async TCP connection scanning
+- Concurrent port scanning
 - Timeout handling
+- Resource management
 
-### 2. Rust-specific Concepts
-- Async/await programming
-- Error handling with Result
-- Ownership and borrowing
-- Concurrency patterns
+### Service Detection
+Located in `service_detection.rs`, implements:
+- Protocol-specific probes
+- Response pattern matching
+- Service fingerprinting
+- Version detection
 
-## Step-by-Step Implementation
+### Pattern Matching
+Located in `patterns.rs`, handles:
+- Scanning pattern definitions
+- Response analysis
+- Service identification
+- Protocol detection
 
-### 1. Project Setup
-```bash
-cargo new port_scanner
-cd port_scanner
-```
+## Key Components
 
-Add dependencies to `Cargo.toml`:
-```toml
-[dependencies]
-tokio = { version = "1.36", features = ["full"] }
-clap = { version = "4.5", features = ["derive"] }
-anyhow = "1.0"
-futures = "0.3"
-```
-
-### 2. Basic Structure
+### 1. Scanner Engine
 ```rust
-use anyhow::Result;
-use clap::Parser;
-use std::net::SocketAddr;
-use std::time::Duration;
-use tokio::net::TcpStream;
-
-#[derive(Parser, Debug)]
-struct Args {
-    host: String,
-    port: u16,
+pub struct Scanner {
+    target: Target,
+    ports: PortRange,
+    concurrency: usize,
+    timeout: Duration,
 }
+```
 
-async fn scan_port(addr: SocketAddr, timeout: Duration) -> Result<bool> {
-    match tokio::time::timeout(timeout, TcpStream::connect(addr)).await {
-        Ok(Ok(_)) => Ok(true),
-        _ => Ok(false),
+Features:
+- Async scanning with Tokio
+- Concurrent connection handling
+- Resource management
+- Progress reporting
+
+### 2. Service Detection
+```rust
+pub struct ServiceDetector {
+    patterns: Vec<ServicePattern>,
+    timeout: Duration,
+}
+```
+
+Features:
+- Protocol-specific probes
+- Pattern matching
+- Service identification
+- Version detection
+
+### 3. DNS Resolution
+```rust
+pub struct DnsResolver {
+    resolver: AsyncResolver,
+}
+```
+
+Features:
+- Async DNS resolution
+- Hostname validation
+- IP range expansion
+- Reverse DNS lookups
+
+## Implementation Patterns
+
+### 1. Async/Await Pattern
+```rust
+async fn scan_port(&self, target: IpAddr, port: u16) -> Result<ScanResult> {
+    let socket = TcpStream::connect((target, port)).await?;
+    // ... scanning logic
+}
+```
+
+### 2. Concurrent Scanning
+```rust
+async fn scan_range(&self, targets: Vec<IpAddr>, ports: PortRange) -> Vec<ScanResult> {
+    let mut results = Vec::new();
+    let semaphore = Arc::new(Semaphore::new(self.concurrency));
+    
+    for target in targets {
+        for port in ports {
+            let permit = semaphore.clone().acquire_owned().await?;
+            // ... scanning logic
+        }
     }
+    results
 }
 ```
 
-### 3. Adding Concurrency
+### 3. Service Detection
 ```rust
-use tokio::sync::Semaphore;
-use std::sync::Arc;
-
-async fn scan_ports(host: &str, ports: &[u16], concurrency: usize) -> Result<()> {
-    let semaphore = Arc::new(Semaphore::new(concurrency));
-    let mut handles = Vec::new();
-
-    for port in ports {
-        let permit = semaphore.clone().acquire_owned().await?;
-        let handle = tokio::spawn(async move {
-            // Scanning logic here
-            drop(permit);
-        });
-        handles.push(handle);
-    }
-
-    join_all(handles).await;
-    Ok(())
+async fn detect_service(&self, target: IpAddr, port: u16) -> Result<ServiceInfo> {
+    let mut socket = TcpStream::connect((target, port)).await?;
+    // ... service detection logic
 }
 ```
 
-## Performance Optimization
+## Error Handling
 
-### 1. Connection Pooling
-- Reuse connections when possible
-- Implement connection pooling
-- Handle connection errors gracefully
-
-### 2. Resource Management
-- Control concurrent connections
-- Implement timeouts
-- Handle system limits
-
-### 3. Memory Efficiency
-- Use streaming for large datasets
-- Implement backpressure
-- Clean up resources properly
-
-## Advanced Features
-
-### 1. Service Detection
+### 1. Custom Error Types
 ```rust
-async fn detect_service(stream: &mut TcpStream) -> Result<String> {
-    // Send probe data
-    // Analyze response
-    // Return service name
+#[derive(Debug, thiserror::Error)]
+pub enum ScanError {
+    #[error("Connection failed: {0}")]
+    ConnectionError(#[from] std::io::Error),
+    #[error("Timeout: {0}")]
+    TimeoutError(String),
+    // ... other error variants
 }
 ```
 
-### 2. OS Detection
+### 2. Error Propagation
 ```rust
-async fn detect_os(target: &str) -> Result<String> {
-    // Send specific probes
-    // Analyze responses
-    // Return OS information
+async fn scan(&self) -> Result<Vec<ScanResult>> {
+    let results = self.scan_range().await?;
+    Ok(results)
 }
 ```
 
-### 3. Custom Protocols
+## Logging and Monitoring
+
+### 1. Structured Logging
 ```rust
-async fn scan_custom_protocol(addr: SocketAddr) -> Result<()> {
-    // Implement custom protocol scanning
-    // Handle protocol-specific responses
-    // Return results
-}
+tracing::info!("Starting scan for target: {}", target);
+tracing::debug!("Scanning port {} on {}", port, target);
+```
+
+### 2. Progress Reporting
+```rust
+let progress = ProgressBar::new(total_ports as u64);
+progress.set_style(ProgressStyle::default_bar()
+    .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+    .progress_chars("#>-"));
 ```
 
 ## Testing
@@ -131,48 +147,40 @@ async fn scan_custom_protocol(addr: SocketAddr) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    
     #[tokio::test]
     async fn test_port_scan() {
-        // Test scanning logic
+        // ... test implementation
     }
 }
 ```
 
 ### 2. Integration Tests
 ```rust
-#[tokio::test]
-async fn test_full_scan() {
-    // Test complete scanning process
+#[cfg(test)]
+mod integration {
+    use super::*;
+    
+    #[tokio::test]
+    async fn test_full_scan() {
+        // ... test implementation
+    }
 }
 ```
 
-### 3. Performance Tests
-```rust
-#[tokio::test]
-async fn test_performance() {
-    // Test scanning performance
-}
-```
+## Performance Optimization
 
-## Best Practices
+1. **Concurrency Control**
+   - Semaphore-based limiting
+   - Resource management
+   - Backpressure handling
 
-1. **Error Handling**
-   - Use proper error types
-   - Implement error recovery
-   - Provide meaningful error messages
+2. **Memory Management**
+   - Efficient data structures
+   - Stream processing
+   - Buffer management
 
-2. **Logging**
-   - Implement structured logging
-   - Add debug information
-   - Handle sensitive data properly
-
-3. **Configuration**
-   - Use environment variables
-   - Support configuration files
-   - Allow runtime configuration
-
-4. **Security**
-   - Validate input data
-   - Handle sensitive information
-   - Follow security best practices 
+3. **Network Optimization**
+   - Connection pooling
+   - Timeout handling
+   - Retry mechanisms 

@@ -1,17 +1,17 @@
-# Contributing Guide
+# Contributing to Rustcan
 
-## Getting Started
+## Development Setup
 
 ### 1. Prerequisites
 - Rust 1.70 or later
+- Cargo
 - Git
-- Basic understanding of network programming
-- Familiarity with async programming
+- Basic understanding of networking concepts
 
-### 2. Development Setup
+### 2. Getting Started
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/rustcan.git
+git clone https://github.com/systemxplore/rustcan.git
 cd rustcan
 
 # Install dependencies
@@ -21,195 +21,210 @@ cargo build
 cargo test
 ```
 
-## Code Style
+### 3. Development Environment
+- Recommended IDE: VS Code with Rust Analyzer
+- Code formatting: rustfmt
+- Linting: clippy
+- Documentation: rustdoc
 
-### 1. Rust Style Guide
-- Follow Rust standard style guide
-- Use `rustfmt` for formatting
-- Follow clippy recommendations
-- Document public APIs
+## Code Style Guide
 
-### 2. Code Organization
-```
-src/
-├── main.rs           # Entry point
-├── scanner/          # Core scanning logic
-├── network/          # Network operations
-├── utils/           # Utility functions
-└── error.rs         # Error handling
-```
-
-### 3. Documentation
+### 1. Rust Conventions
 ```rust
-/// Scans a single port on the target host
+// Use snake_case for functions and variables
+fn scan_port(target: &str, port: u16) -> Result<()> {
+    // ...
+}
+
+// Use PascalCase for types and traits
+struct Scanner {
+    // ...
+}
+
+// Use SCREAMING_SNAKE_CASE for constants
+const MAX_CONNECTIONS: usize = 1000;
+```
+
+### 2. Documentation
+```rust
+/// Scans a single port on the target host.
 ///
 /// # Arguments
 ///
-/// * `addr` - The target address to scan
-/// * `timeout` - Connection timeout duration
+/// * `target` - The target host to scan
+/// * `port` - The port number to scan
 ///
 /// # Returns
 ///
-/// * `Result<Option<u16>>` - The open port number if found
-///
-/// # Examples
-///
-/// ```
-/// let addr = "127.0.0.1:80".parse().unwrap();
-/// let result = scan_port(addr, Duration::from_secs(1)).await?;
-/// ```
+/// Returns `Ok(())` if the port is open, `Err` otherwise.
+pub async fn scan_port(target: &str, port: u16) -> Result<()> {
+    // ...
+}
 ```
 
-## Testing
+### 3. Error Handling
+```rust
+#[derive(Debug, thiserror::Error)]
+pub enum ScanError {
+    #[error("Connection failed: {0}")]
+    ConnectionError(#[from] std::io::Error),
+    #[error("Timeout: {0}")]
+    TimeoutError(String),
+}
+```
+
+## Testing Guidelines
 
 ### 1. Unit Tests
 ```rust
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    
     #[tokio::test]
     async fn test_port_scan() {
-        let addr = "127.0.0.1:80".parse().unwrap();
-        let result = scan_port(addr, Duration::from_secs(1)).await.unwrap();
-        assert!(result.is_some());
+        let scanner = Scanner::new(/* ... */);
+        let result = scanner.scan_port(/* ... */).await;
+        assert!(result.is_ok());
     }
 }
 ```
 
 ### 2. Integration Tests
 ```rust
-#[tokio::test]
-async fn test_full_scan() {
-    let scanner = Scanner::new("127.0.0.1", 80..81);
-    let results = scanner.run().await.unwrap();
-    assert!(!results.is_empty());
+#[cfg(test)]
+mod integration {
+    use super::*;
+    
+    #[tokio::test]
+    async fn test_full_scan() {
+        let scanner = Scanner::new(/* ... */);
+        let results = scanner.scan().await;
+        assert!(!results.is_empty());
+    }
 }
 ```
 
 ### 3. Performance Tests
 ```rust
-#[tokio::test]
-async fn test_performance() {
-    let start = std::time::Instant::now();
-    let scanner = Scanner::new("127.0.0.1", 1..1024);
-    scanner.run().await.unwrap();
-    assert!(start.elapsed() < Duration::from_secs(5));
+#[cfg(test)]
+mod benchmarks {
+    use super::*;
+    use test::Bencher;
+    
+    #[bench]
+    fn bench_port_scan(b: &mut Bencher) {
+        b.iter(|| {
+            // Benchmark code
+        });
+    }
 }
 ```
 
 ## Pull Request Process
 
 ### 1. Before Submitting
+- Run all tests
+- Check code formatting
 - Update documentation
-- Add tests
-- Run linter
-- Check formatting
+- Add new tests if needed
 
 ### 2. Pull Request Template
 ```markdown
 ## Description
-Brief description of changes
+[Description of changes]
 
-## Type of Change
-- [ ] Bug fix
-- [ ] New feature
-- [ ] Breaking change
-- [ ] Documentation update
+## Related Issues
+[Link to related issues]
 
 ## Testing
-- [ ] Unit tests added
-- [ ] Integration tests added
-- [ ] Performance tests added
+- [ ] Unit tests added/updated
+- [ ] Integration tests added/updated
+- [ ] Performance tests added/updated
 
-## Checklist
-- [ ] Code follows style guide
+## Documentation
+- [ ] Code comments added/updated
 - [ ] Documentation updated
-- [ ] Tests pass
-- [ ] No breaking changes
+- [ ] README updated if needed
 ```
 
 ### 3. Review Process
-- Code review
-- Performance review
+- Code review by maintainers
+- CI/CD pipeline checks
+- Performance impact assessment
 - Security review
-- Documentation review
 
-## Feature Development
+## Development Workflow
 
-### 1. Feature Branch
-```bash
-git checkout -b feature/new-feature
+### 1. Branching Strategy
+- `main` - Stable release branch
+- `develop` - Development branch
+- `feature/*` - Feature branches
+- `bugfix/*` - Bug fix branches
+
+### 2. Commit Messages
+```
+feat: add new scanning feature
+fix: resolve connection timeout issue
+docs: update API documentation
+test: add integration tests
+chore: update dependencies
 ```
 
-### 2. Development Cycle
-1. Write tests
-2. Implement feature
-3. Run tests
-4. Update documentation
-5. Create pull request
+### 3. Release Process
+- Version bump
+- Changelog update
+- Documentation update
+- Release notes
 
-### 3. Code Review
-- Follow review guidelines
-- Address feedback
-- Update code as needed
-- Resolve conflicts
+## Project Structure
 
-## Release Process
-
-### 1. Version Bumping
-```bash
-# Update version in Cargo.toml
-cargo version patch  # or minor/major
+### 1. Source Code
+```
+src/
+├── main.rs         # CLI interface
+├── scanner.rs      # Core scanning logic
+├── patterns.rs     # Pattern matching
+├── service_detection.rs # Service detection
+├── dns.rs          # DNS resolution
+├── types.rs        # Common types
+├── utils.rs        # Utility functions
+└── lib.rs          # Library interface
 ```
 
-### 2. Release Checklist
-- [ ] Update version
-- [ ] Update changelog
-- [ ] Run all tests
-- [ ] Build release
-- [ ] Create tag
-- [ ] Push release
+### 2. Tests
+```
+tests/
+├── unit/           # Unit tests
+├── integration/    # Integration tests
+└── benchmarks/     # Performance tests
+```
 
-### 3. Documentation Updates
-- Update README
-- Update API docs
-- Update examples
-- Update changelog
+### 3. Documentation
+```
+docs/
+├── api/            # API documentation
+├── examples/       # Code examples
+└── guides/         # User guides
+```
 
 ## Community Guidelines
 
 ### 1. Communication
-- Be respectful
-- Be constructive
-- Follow code of conduct
-- Help others
+- Use GitHub issues for bug reports
+- Use discussions for questions
+- Follow the code of conduct
+- Be respectful and professional
 
-### 2. Issue Reporting
-- Use issue template
-- Provide reproduction steps
-- Include system info
-- Add logs if relevant
+### 2. Contribution Types
+- Bug reports
+- Feature requests
+- Documentation updates
+- Code improvements
+- Performance optimizations
 
-### 3. Code Review
-- Be thorough
-- Be constructive
-- Explain suggestions
-- Follow guidelines
-
-## Resources
-
-### 1. Documentation
-- [Rust Book](https://doc.rust-lang.org/book/)
-- [Tokio Guide](https://tokio.rs/tokio/tutorial)
-- [Async Book](https://rust-lang.github.io/async-book/)
-
-### 2. Tools
-- [rustfmt](https://github.com/rust-lang/rustfmt)
-- [clippy](https://github.com/rust-lang/rust-clippy)
-- [cargo-edit](https://github.com/killercup/cargo-edit)
-
-### 3. Community
-- [Rust Users Forum](https://users.rust-lang.org/)
-- [Rust Discord](https://discord.gg/rust-lang)
-- [Rust Reddit](https://www.reddit.com/r/rust/) 
+### 3. Getting Help
+- Check documentation
+- Search existing issues
+- Ask in discussions
+- Contact maintainers 

@@ -1,114 +1,104 @@
-# Rustcan Architecture Overview
+# Rustcan Architecture
 
-## System Design
+## System Overview
 
-Rustcan is designed with a focus on performance, reliability, and extensibility. The architecture follows these key principles:
-
-1. **Asynchronous First**
-   - Built on Tokio runtime for efficient async I/O
-   - Non-blocking network operations
-   - Efficient resource utilization
-
-2. **Modular Design**
-   - Clear separation of concerns
-   - Pluggable components
-   - Easy to extend functionality
-
-3. **Resource Management**
-   - Controlled concurrency
-   - Memory efficiency
-   - Graceful error handling
+Rustcan is a high-performance port scanner built with Rust, utilizing modern async programming patterns and efficient network scanning techniques.
 
 ## Core Components
 
 ### 1. Scanner Engine
-```rust
-pub struct Scanner {
-    target: Target,
-    ports: PortRange,
-    concurrency: usize,
-    timeout: Duration,
-}
-```
+- Located in `scanner.rs`
+- Implements the core scanning functionality
+- Uses async/await for concurrent scanning
+- Supports various scanning patterns and techniques
 
-- Handles the core scanning logic
-- Manages concurrent connections
-- Implements timeout handling
-- Controls resource usage
+### 2. Service Detection
+- Located in `service_detection.rs`
+- Implements service fingerprinting
+- Uses pattern matching to identify services
+- Supports multiple protocol detection
 
-### 2. Target Management
-```rust
-pub enum Target {
-    Single(IpAddr),
-    Network(IpNetwork),
-    File(PathBuf),
-}
-```
+### 3. Pattern Matching
+- Located in `patterns.rs`
+- Defines scanning patterns and strategies
+- Implements service detection patterns
+- Handles response analysis
 
-- Supports various target types
-- Handles IP address parsing
-- Manages CIDR notation
-- Supports file-based input
+### 4. DNS Resolution
+- Located in `dns.rs`
+- Handles hostname resolution
+- Uses trust-dns-resolver for async DNS queries
+- Supports both IPv4 and IPv6
 
-### 3. Port Management
-```rust
-pub struct PortRange {
-    start: u16,
-    end: u16,
-}
-```
+### 5. CLI Interface
+- Located in `main.rs`
+- Implements command-line interface
+- Uses clap for argument parsing
+- Provides progress reporting and output formatting
 
-- Manages port ranges
-- Validates port numbers
-- Handles port scanning strategies
+## Async Runtime
+
+The project uses Tokio as its async runtime, providing:
+- Efficient task scheduling
+- Non-blocking I/O operations
+- Concurrent scanning capabilities
+- Resource management
+
+## Concurrency Model
+
+- Uses async/await for concurrent operations
+- Implements worker pools for scanning tasks
+- Utilizes channels for communication between components
+- Implements backpressure mechanisms
+
+## Network Scanning Patterns
+
+1. **TCP Connect Scan**
+   - Standard TCP connection attempt
+   - Reliable but slower than other methods
+
+2. **Service Detection**
+   - Protocol-specific probes
+   - Response pattern matching
+   - Version detection
+
+3. **DNS Resolution**
+   - Async hostname resolution
+   - Reverse DNS lookups
+   - IP range expansion
 
 ## Data Flow
 
-1. **Input Processing**
-   ```
-   Command Line Args → Target Parser → IP List
-   ```
+1. Input Processing
+   - Command-line arguments
+   - Target specification
+   - Scan options
 
-2. **Scanning Process**
-   ```
-   IP List → Port Range → Concurrent Tasks → Results
-   ```
+2. Target Resolution
+   - DNS resolution
+   - IP range expansion
+   - Port specification
 
-3. **Output Generation**
-   ```
-   Results → Progress Bar → Console Output
-   ```
-
-## Key Design Decisions
-
-### 1. Async/Await Pattern
-- Uses Tokio for async runtime
-- Efficient resource utilization
-- Non-blocking I/O operations
-
-### 2. Concurrency Control
-- Semaphore-based concurrency limiting
-- Controlled resource usage
-- Prevents system overload
-
-### 3. Error Handling
-- Graceful error recovery
-- Detailed error reporting
-- User-friendly error messages
-
-## Future Extensions
-
-1. **Protocol Support**
-   - UDP scanning
-   - Custom protocols
+3. Scanning Process
+   - Concurrent connection attempts
+   - Response collection
    - Service detection
 
-2. **Output Formats**
-   - JSON output
-   - XML output
-   - Custom formats
+4. Output Generation
+   - Progress reporting
+   - Result formatting
+   - Error handling
 
-3. **Advanced Features**
-   - OS detection
-   - Service versioning
-   - Vulnerability scanning 
+## Error Handling
+
+- Uses anyhow for error propagation
+- Implements custom error types
+- Provides detailed error messages
+- Graceful error recovery
+
+## Logging and Monitoring
+
+- Uses tracing for structured logging
+- Implements progress reporting
+- Provides detailed scan statistics
+- Supports different log levels 

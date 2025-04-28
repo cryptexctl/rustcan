@@ -1,134 +1,97 @@
-# Technical Details
+# Rustcan Technical Details
 
 ## Network Protocols
 
 ### TCP Scanning
+- Standard TCP connection scanning
+- SYN scanning support
+- Connection timeout handling
+- Port state detection
+
+### Service Detection
+- Protocol-specific probes
+- Response pattern matching
+- Service fingerprinting
+- Version detection
+
+### DNS Resolution
+- Async DNS queries
+- Hostname validation
+- IP range expansion
+- Reverse DNS lookups
+
+## Async Programming
+
+### Tokio Runtime
+- Efficient task scheduling
+- Non-blocking I/O
+- Resource management
+- Error handling
+
+### Concurrency Patterns
 ```rust
-async fn tcp_scan(addr: SocketAddr) -> Result<PortState> {
-    match TcpStream::connect(addr).await {
-        Ok(_) => Ok(PortState::Open),
-        Err(e) => match e.kind() {
-            std::io::ErrorKind::ConnectionRefused => Ok(PortState::Closed),
-            _ => Ok(PortState::Filtered),
-        },
+// Worker pool pattern
+async fn process_tasks(tasks: Vec<Task>) -> Vec<Result> {
+    let (tx, rx) = channel::bounded(concurrency);
+    let mut workers = Vec::new();
+    
+    for _ in 0..concurrency {
+        let rx = rx.clone();
+        workers.push(tokio::spawn(async move {
+            while let Some(task) = rx.recv().await {
+                // Process task
+            }
+        }));
     }
+    
+    // Send tasks and collect results
 }
 ```
 
-### UDP Scanning
-```rust
-async fn udp_scan(addr: SocketAddr) -> Result<PortState> {
-    // UDP scanning implementation
-    // ICMP error handling
-    // Timeout management
-}
-```
-
-## Async Programming in Rust
-
-### 1. Tokio Runtime
-```rust
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Async code here
-}
-```
-
-### 2. Future Types
-```rust
-use std::future::Future;
-use std::pin::Pin;
-
-type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
-```
-
-### 3. Async Traits
-```rust
-#[async_trait]
-pub trait Scanner {
-    async fn scan(&self, target: &str) -> Result<Vec<Port>>;
-}
-```
-
-## Concurrency Patterns
-
-### 1. Semaphore Pattern
-```rust
-let semaphore = Arc::new(Semaphore::new(concurrency));
-let permit = semaphore.acquire_owned().await?;
-// Do work
-drop(permit);
-```
-
-### 2. Channel Pattern
-```rust
-let (tx, rx) = mpsc::channel(100);
-tokio::spawn(async move {
-    tx.send(result).await?;
-});
-```
-
-### 3. Worker Pool
-```rust
-struct WorkerPool {
-    workers: Vec<JoinHandle<()>>,
-    task_sender: mpsc::Sender<Task>,
-}
-```
-
-## Memory Management
-
-### 1. Zero-Copy Operations
-```rust
-use bytes::Bytes;
-use tokio::io::AsyncReadExt;
-
-async fn read_data(stream: &mut TcpStream) -> Result<Bytes> {
-    let mut buf = Vec::with_capacity(1024);
-    stream.read_to_end(&mut buf).await?;
-    Ok(Bytes::from(buf))
-}
-```
-
-### 2. Buffer Management
-```rust
-struct Buffer {
-    data: Vec<u8>,
-    capacity: usize,
-    position: usize,
-}
-```
-
-## Error Handling
-
-### 1. Custom Error Types
+### Error Handling
 ```rust
 #[derive(Debug, thiserror::Error)]
 pub enum ScanError {
     #[error("Connection failed: {0}")]
     ConnectionError(#[from] std::io::Error),
-    
     #[error("Timeout: {0}")]
     TimeoutError(String),
-    
-    #[error("Invalid target: {0}")]
-    InvalidTarget(String),
+    #[error("DNS resolution failed: {0}")]
+    DnsError(#[from] trust_dns_resolver::error::ResolveError),
 }
-
-pub type Result<T> = std::result::Result<T, ScanError>;
 ```
 
-### 2. Error Propagation
+## Data Structures
+
+### Scanner Configuration
 ```rust
-async fn scan_with_retry(addr: SocketAddr) -> Result<()> {
-    for attempt in 0..3 {
-        match scan_port(addr).await {
-            Ok(_) => return Ok(()),
-            Err(e) if attempt == 2 => return Err(e),
-            Err(_) => continue,
-        }
-    }
-    Ok(())
+pub struct ScannerConfig {
+    pub target: Target,
+    pub ports: PortRange,
+    pub concurrency: usize,
+    pub timeout: Duration,
+    pub retries: u32,
+}
+```
+
+### Scan Results
+```rust
+pub struct ScanResult {
+    pub target: IpAddr,
+    pub port: u16,
+    pub state: PortState,
+    pub service: Option<ServiceInfo>,
+    pub latency: Duration,
+}
+```
+
+### Service Information
+```rust
+pub struct ServiceInfo {
+    pub name: String,
+    pub version: Option<String>,
+    pub protocol: Protocol,
+    pub banner: Option<String>,
 }
 ```
 
@@ -136,64 +99,116 @@ async fn scan_with_retry(addr: SocketAddr) -> Result<()> {
 
 ### 1. Connection Pooling
 ```rust
-struct ConnectionPool {
-    connections: Vec<TcpStream>,
+pub struct ConnectionPool {
+    connections: HashMap<SocketAddr, TcpStream>,
     max_size: usize,
-    current: usize,
 }
 ```
 
-### 2. Batch Processing
+### 2. Resource Management
 ```rust
-async fn process_batch(items: Vec<Item>) -> Result<()> {
-    let mut handles = Vec::new();
-    for item in items {
-        handles.push(tokio::spawn(process_item(item)));
-    }
-    join_all(handles).await;
-    Ok(())
-}
-```
-
-### 3. Resource Limits
-```rust
-struct ResourceLimits {
-    max_connections: usize,
-    max_memory: usize,
+pub struct ResourceManager {
+    semaphore: Arc<Semaphore>,
     timeout: Duration,
+    max_retries: u32,
 }
 ```
 
-## Testing and Debugging
-
-### 1. Mock Network
+### 3. Buffer Management
 ```rust
-struct MockNetwork {
-    responses: HashMap<SocketAddr, Vec<u8>>,
-    delays: HashMap<SocketAddr, Duration>,
+pub struct BufferPool {
+    buffers: Vec<Vec<u8>>,
+    max_size: usize,
 }
 ```
 
-### 2. Performance Profiling
-```rust
-use tracing::{info, instrument};
+## Logging and Monitoring
 
-#[instrument]
-async fn scan_with_metrics(addr: SocketAddr) -> Result<()> {
-    let start = std::time::Instant::now();
-    let result = scan_port(addr).await?;
-    info!("Scan completed in {:?}", start.elapsed());
-    Ok(result)
+### 1. Structured Logging
+```rust
+tracing::info!(
+    target = "scanner",
+    "Starting scan for {}:{}",
+    target,
+    port
+);
+```
+
+### 2. Metrics Collection
+```rust
+pub struct Metrics {
+    pub connections: AtomicUsize,
+    pub timeouts: AtomicUsize,
+    pub errors: AtomicUsize,
+    pub duration: Duration,
 }
 ```
 
-### 3. Debug Logging
-```rust
-use log::{debug, error, info};
+## Testing
 
-debug!("Starting scan on {}", addr);
-match result {
-    Ok(_) => info!("Port {} is open", port),
-    Err(e) => error!("Scan failed: {}", e),
+### 1. Unit Tests
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[tokio::test]
+    async fn test_port_scan() {
+        let scanner = Scanner::new(/* ... */);
+        let result = scanner.scan_port(/* ... */).await;
+        assert!(result.is_ok());
+    }
+}
+```
+
+### 2. Integration Tests
+```rust
+#[cfg(test)]
+mod integration {
+    use super::*;
+    
+    #[tokio::test]
+    async fn test_full_scan() {
+        let scanner = Scanner::new(/* ... */);
+        let results = scanner.scan().await;
+        assert!(!results.is_empty());
+    }
+}
+```
+
+## Security Considerations
+
+### 1. Input Validation
+```rust
+pub fn validate_target(target: &str) -> Result<Target> {
+    // Validate IP address or hostname
+    // Check for invalid characters
+    // Verify DNS resolution
+}
+```
+
+### 2. Resource Limits
+```rust
+pub struct ResourceLimits {
+    pub max_connections: usize,
+    pub max_ports: usize,
+    pub max_timeout: Duration,
+}
+```
+
+### 3. Error Handling
+```rust
+pub fn handle_error(error: ScanError) -> Result<()> {
+    match error {
+        ScanError::ConnectionError(e) => {
+            tracing::warn!("Connection failed: {}", e);
+            Ok(())
+        },
+        ScanError::TimeoutError(msg) => {
+            tracing::warn!("Timeout: {}", msg);
+            Ok(())
+        },
+        _ => Err(error.into()),
+    }
 }
 ``` 

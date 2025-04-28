@@ -1,225 +1,181 @@
-# Security Considerations
+# Rustcan Security Considerations
 
 ## Network Security Implications
 
-### 1. Legal Considerations
-- Obtain proper authorization before scanning
-- Follow local laws and regulations
-- Respect network usage policies
-- Document scanning activities
+### 1. Scanning Impact
+- Network congestion
+- Target system load
+- Firewall detection
+- IDS/IPS alerts
 
-### 2. Network Impact
-- Avoid network congestion
-- Respect bandwidth limits
-- Handle firewall interactions
-- Manage system resources
+### 2. Legal Considerations
+- Permission requirements
+- Network ownership
+- Data protection laws
+- Compliance requirements
 
-### 3. Detection and Prevention
-- Implement stealth scanning
-- Handle IDS/IPS systems
-- Manage logging and traces
-- Control scan patterns
+### 3. Ethical Guidelines
+- Responsible disclosure
+- Permission-based scanning
+- Data handling
+- Privacy protection
 
-## Best Practices
+## Security Best Practices
 
 ### 1. Input Validation
 ```rust
-fn validate_target(target: &str) -> Result<()> {
-    // Validate IP address format
-    if !is_valid_ip(target) {
-        return Err(Error::InvalidTarget);
-    }
-    
-    // Check for private networks
-    if is_private_network(target) {
-        return Err(Error::PrivateNetwork);
-    }
-    
-    Ok(())
+pub fn validate_target(target: &str) -> Result<Target> {
+    // Validate IP address or hostname
+    // Check for invalid characters
+    // Verify DNS resolution
+    // Prevent injection attacks
 }
 ```
 
-### 2. Rate Limiting
+### 2. Resource Management
 ```rust
-struct RateLimiter {
-    requests: u64,
-    window: Duration,
-    last_reset: Instant,
-}
-
-impl RateLimiter {
-    fn check_rate(&mut self) -> bool {
-        if self.last_reset.elapsed() > self.window {
-            self.requests = 0;
-            self.last_reset = Instant::now();
-        }
-        self.requests < self.max_requests
-    }
+pub struct ResourceLimits {
+    pub max_connections: usize,
+    pub max_ports: usize,
+    pub max_timeout: Duration,
+    pub max_retries: u32,
 }
 ```
 
-### 3. Resource Management
+### 3. Error Handling
 ```rust
-struct ResourceManager {
-    max_connections: usize,
-    current_connections: usize,
-    semaphore: Arc<Semaphore>,
-}
-
-impl ResourceManager {
-    async fn acquire(&mut self) -> Result<()> {
-        if self.current_connections >= self.max_connections {
-            return Err(Error::ResourceExhausted);
-        }
-        self.current_connections += 1;
-        Ok(())
+pub fn handle_error(error: ScanError) -> Result<()> {
+    match error {
+        ScanError::ConnectionError(e) => {
+            tracing::warn!("Connection failed: {}", e);
+            Ok(())
+        },
+        ScanError::TimeoutError(msg) => {
+            tracing::warn!("Timeout: {}", msg);
+            Ok(())
+        },
+        _ => Err(error.into()),
     }
 }
 ```
 
 ## Security Features
 
-### 1. Stealth Scanning
+### 1. Access Control
 ```rust
-struct StealthScanner {
-    delay: Duration,
-    jitter: f64,
-    pattern: ScanPattern,
-}
-
-impl StealthScanner {
-    async fn scan(&self, target: &str) -> Result<()> {
-        // Implement stealth scanning techniques
-        // Add random delays
-        // Use non-sequential patterns
-    }
+pub struct AccessControl {
+    pub allowed_networks: Vec<IpNetwork>,
+    pub denied_networks: Vec<IpNetwork>,
+    pub max_scan_size: usize,
 }
 ```
 
-### 2. Firewall Handling
+### 2. Rate Limiting
 ```rust
-struct FirewallHandler {
-    retry_count: u32,
-    backoff: Duration,
-    timeout: Duration,
-}
-
-impl FirewallHandler {
-    async fn handle_block(&self) -> Result<()> {
-        // Implement firewall evasion
-        // Handle blocked connections
-        // Manage timeouts
-    }
+pub struct RateLimiter {
+    pub requests_per_second: u32,
+    pub burst_size: u32,
+    pub timeout: Duration,
 }
 ```
 
-### 3. Logging and Monitoring
+### 3. Data Protection
 ```rust
-struct SecurityLogger {
-    log_file: PathBuf,
-    sensitive_data: bool,
-    log_level: LogLevel,
-}
-
-impl SecurityLogger {
-    fn log_scan(&self, event: ScanEvent) -> Result<()> {
-        // Implement secure logging
-        // Handle sensitive data
-        // Manage log rotation
-    }
+pub struct DataProtection {
+    pub encryption: bool,
+    pub data_retention: Duration,
+    pub access_logging: bool,
 }
 ```
 
 ## Legal Compliance
 
-### 1. Authorization
-```rust
-struct Authorization {
-    target: String,
-    scope: ScanScope,
-    timestamp: DateTime<Utc>,
-    signer: String,
-}
+### 1. Data Protection
+- GDPR compliance
+- Data minimization
+- Access control
+- Audit logging
 
-impl Authorization {
-    fn validate(&self) -> Result<()> {
-        // Validate authorization
-        // Check scope
-        // Verify signature
-    }
+### 2. Network Usage
+- Permission requirements
+- Network ownership
+- Terms of service
+- Acceptable use policy
+
+### 3. Reporting
+- Vulnerability disclosure
+- Incident response
+- Compliance reporting
+- Audit trails
+
+## Security Monitoring
+
+### 1. Logging
+```rust
+tracing::info!(
+    target = "security",
+    "Scan request from {} for {}",
+    source_ip,
+    target
+);
+```
+
+### 2. Alerting
+```rust
+pub struct SecurityAlert {
+    pub severity: AlertSeverity,
+    pub message: String,
+    pub timestamp: DateTime<Utc>,
+    pub source: String,
 }
 ```
 
-### 2. Documentation
+### 3. Auditing
 ```rust
-struct ScanDocumentation {
-    target: String,
-    purpose: String,
-    timestamp: DateTime<Utc>,
-    results: Vec<ScanResult>,
-}
-
-impl ScanDocumentation {
-    fn generate_report(&self) -> Result<String> {
-        // Generate documentation
-        // Include legal information
-        // Format results
-    }
-}
-```
-
-### 3. Compliance Checks
-```rust
-struct ComplianceChecker {
-    rules: Vec<ComplianceRule>,
-    violations: Vec<Violation>,
-}
-
-impl ComplianceChecker {
-    fn check_compliance(&mut self, scan: &Scan) -> Result<()> {
-        // Check compliance rules
-        // Record violations
-        // Generate reports
-    }
+pub struct AuditLog {
+    pub event: String,
+    pub user: String,
+    pub timestamp: DateTime<Utc>,
+    pub details: Value,
 }
 ```
 
 ## Security Recommendations
 
-### 1. Network Security
-- Use encrypted connections
-- Implement proper authentication
-- Handle sensitive data securely
-- Follow security protocols
+### 1. Network Scanning
+- Obtain proper permissions
+- Respect network policies
+- Monitor impact
+- Document activities
 
-### 2. System Security
-- Implement proper access controls
-- Handle file permissions
-- Manage system resources
-- Follow security best practices
+### 2. Data Handling
+- Minimize data collection
+- Secure storage
+- Access control
+- Regular cleanup
 
-### 3. Application Security
-- Validate all inputs
-- Handle errors securely
-- Implement proper logging
-- Follow secure coding practices
+### 3. System Security
+- Regular updates
+- Vulnerability scanning
+- Access control
+- Monitoring
 
-## Future Security Enhancements
+## Future Security Improvements
 
 ### 1. Authentication
-- Add support for certificates
-- Implement OAuth integration
-- Add multi-factor authentication
-- Support secure key storage
+- API key management
+- Role-based access
+- Multi-factor auth
+- Session management
 
 ### 2. Encryption
-- Add TLS support
-- Implement end-to-end encryption
-- Add secure key exchange
-- Support encrypted storage
+- TLS support
+- Data encryption
+- Key management
+- Secure storage
 
 ### 3. Monitoring
-- Add security event monitoring
-- Implement intrusion detection
-- Add audit logging
-- Support security reporting 
+- Real-time alerts
+- Anomaly detection
+- Compliance monitoring
+- Audit trails 
