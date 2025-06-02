@@ -2,7 +2,108 @@ use regex::Regex;
 use std::fs;
 use std::path::Path;
 use anyhow::Result;
-use crate::types::{ServicePattern, NmapService, NmapProbe, NmapMatch};
+use std::collections::HashMap;
+use crate::types::{ServicePattern, NmapService, NmapProbe, NmapMatch, Protocol, MacPrefix, RpcInfo};
+
+lazy_static::lazy_static! {
+    static ref PROTOCOLS: HashMap<String, Protocol> = {
+        let mut map = HashMap::new();
+        if let Ok(protocols) = load_protocols("src/assets/nmap-protocols") {
+            for protocol in protocols {
+                map.insert(protocol.name.clone(), protocol);
+            }
+        }
+        map
+    };
+
+    static ref MAC_PREFIXES: HashMap<String, String> = {
+        let mut map = HashMap::new();
+        if let Ok(prefixes) = load_mac_prefixes("src/assets/nmap-mac-prefixes") {
+            for prefix in prefixes {
+                map.insert(prefix.prefix, prefix.vendor);
+            }
+        }
+        map
+    };
+
+    static ref RPC_INFO: HashMap<(String, String), RpcInfo> = {
+        let mut map = HashMap::new();
+        if let Ok(info) = load_rpc_info("src/assets/nmap-rpc") {
+            for rpc in info {
+                map.insert((rpc.program.clone(), rpc.version.clone()), rpc);
+            }
+        }
+        map
+    };
+
+    static ref NMAP_SERVICES: HashMap<u16, Vec<NmapService>> = {
+        let mut map = HashMap::new();
+        if let Ok(services) = load_nmap_services("src/assets/nmap-services") {
+            for service in services {
+                map.entry(service.port).or_insert_with(Vec::new).push(service);
+            }
+        }
+        map
+    };
+
+    static ref SERVICE_PATTERNS: Vec<ServicePattern> = {
+        let mut patterns = Vec::with_capacity(1000);
+        
+        patterns.extend(get_ssh_patterns());
+        patterns.extend(get_http_patterns());
+        patterns.extend(get_ftp_patterns());
+        patterns.extend(get_mysql_patterns());
+        patterns.extend(get_redis_patterns());
+        
+        if let Ok(probes) = load_nmap_probes("src/assets/nmap-service-probes") {
+            for probe in probes {
+                for nmap_match in probe.matches {
+                    if nmap_match.pattern.contains("**") || nmap_match.pattern.contains("\\") || nmap_match.pattern.contains("^") {
+                        continue;
+                    }
+
+                    if let Ok(regex) = Regex::new(&nmap_match.pattern) {
+                        let pattern = ServicePattern {
+                            name: nmap_match.service.clone(),
+                            regex,
+                            probe: probe.probe_string.clone(),
+                            version_regex: nmap_match.version_info.as_ref().and_then(|v| Regex::new(v).ok()),
+                            product_regex: nmap_match.product_info.as_ref().and_then(|p| Regex::new(p).ok()),
+                            os_regex: nmap_match.os_info.as_ref().and_then(|o| Regex::new(o).ok()),
+                            extra_info_regex: nmap_match.extra_info.as_ref().and_then(|i| Regex::new(i).ok()),
+                            cpe_regex: nmap_match.cpe.as_ref().and_then(|c| Regex::new(c).ok()),
+                            vulnerability_patterns: vec![],
+                            total_wait_ms: probe.total_wait_ms,
+                            tcp_wrapped_ms: probe.tcp_wrapped_ms,
+                        };
+                        patterns.push(pattern);
+                    }
+                }
+            }
+        }
+        patterns
+    };
+}
+
+pub fn get_all_patterns() -> Vec<ServicePattern> {
+    SERVICE_PATTERNS.clone()
+}
+
+pub fn get_protocol(name: &str) -> Option<&Protocol> {
+    PROTOCOLS.get(name)
+}
+
+pub fn get_mac_vendor(prefix: &str) -> Option<&String> {
+    MAC_PREFIXES.get(prefix)
+}
+
+pub fn get_rpc_info<'a>(program: &'a str, version: &'a str) -> Option<&'static RpcInfo> {
+    RPC_INFO.get(&(program.to_string(), version.to_string()))
+}
+
+pub fn get_services_by_port(port: u16) -> Option<&'static Vec<NmapService>> {
+    NMAP_SERVICES.get(&port)
+}
 
 pub fn get_ssh_patterns() -> Vec<ServicePattern> {
     vec![
@@ -230,41 +331,106 @@ pub fn load_nmap_probes(file_path: &str) -> Result<Vec<NmapProbe>> {
     Ok(probes)
 }
 
-pub fn get_all_patterns() -> Vec<ServicePattern> {
-    let mut patterns = Vec::new();
-    
-    patterns.extend(get_ssh_patterns());
-    patterns.extend(get_http_patterns());
-    patterns.extend(get_ftp_patterns());
-    patterns.extend(get_mysql_patterns());
-    patterns.extend(get_redis_patterns());
-    
-    if let Ok(probes) = load_nmap_probes("src/assets/nmap-service-probes") {
-        for probe in probes {
-            for nmap_match in probe.matches {
-                if nmap_match.pattern.contains("**") || nmap_match.pattern.contains("\\") || nmap_match.pattern.contains("^") {
-                    continue;
-                }
+pub fn load_protocols(file_path: &str) -> Result<Vec<Protocol>> {
+    let path = Path::new(file_path);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
 
-                if let Ok(regex) = Regex::new(&nmap_match.pattern) {
-                    let pattern = ServicePattern {
-                        name: nmap_match.service.clone(),
-                        regex,
-                        probe: probe.probe_string.clone(),
-                        version_regex: nmap_match.version_info.as_ref().and_then(|v| Regex::new(v).ok()),
-                        product_regex: nmap_match.product_info.as_ref().and_then(|p| Regex::new(p).ok()),
-                        os_regex: nmap_match.os_info.as_ref().and_then(|o| Regex::new(o).ok()),
-                        extra_info_regex: nmap_match.extra_info.as_ref().and_then(|i| Regex::new(i).ok()),
-                        cpe_regex: nmap_match.cpe.as_ref().and_then(|c| Regex::new(c).ok()),
-                        vulnerability_patterns: vec![],
-                        total_wait_ms: probe.total_wait_ms,
-                        tcp_wrapped_ms: probe.tcp_wrapped_ms,
-                    };
-                    patterns.push(pattern);
-                }
+    let content = fs::read_to_string(path)?;
+    let mut protocols = Vec::new();
+
+    for line in content.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let name = parts[0].to_string();
+            if let Ok(number) = parts[1].parse::<u8>() {
+                let aliases = if parts.len() > 2 {
+                    parts[2..].iter().map(|&s| s.to_string()).collect()
+                } else {
+                    Vec::new()
+                };
+
+                protocols.push(Protocol {
+                    name,
+                    number,
+                    aliases,
+                });
             }
         }
     }
-    
-    patterns
+
+    Ok(protocols)
+}
+
+pub fn load_mac_prefixes(file_path: &str) -> Result<Vec<MacPrefix>> {
+    let path = Path::new(file_path);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let content = fs::read_to_string(path)?;
+    let mut prefixes = Vec::new();
+
+    for line in content.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let prefix = parts[0].to_string();
+            let vendor = parts[1..].join(" ");
+
+            prefixes.push(MacPrefix {
+                prefix,
+                vendor,
+            });
+        }
+    }
+
+    Ok(prefixes)
+}
+
+pub fn load_rpc_info(file_path: &str) -> Result<Vec<RpcInfo>> {
+    let path = Path::new(file_path);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let content = fs::read_to_string(path)?;
+    let mut rpc_info = Vec::new();
+
+    for line in content.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 3 {
+            let program = parts[0].to_string();
+            let version = parts[1].to_string();
+            let protocol = parts[2].to_string();
+            let port = parts.get(3).and_then(|p| p.parse::<u16>().ok());
+            let description = if parts.len() > 4 {
+                Some(parts[4..].join(" "))
+            } else {
+                None
+            };
+
+            rpc_info.push(RpcInfo {
+                program,
+                version,
+                protocol,
+                port,
+                description,
+            });
+        }
+    }
+
+    Ok(rpc_info)
 } 

@@ -4,24 +4,28 @@ use tokio::net::TcpStream;
 use anyhow::Result;
 use crate::types::Service;
 use crate::patterns::get_all_patterns;
+use std::time::Duration;
 
 pub async fn detect_service(stream: &mut TcpStream) -> Result<(Option<Service>, String)> {
-    let mut buffer = [0u8; 1024];
+    let mut buffer = [0u8; 4096];
     let mut raw_response = String::new();
-    let patterns = get_all_patterns();    
-    let mut probe = Vec::new();
+    let patterns = get_all_patterns();
+    
+    let mut probe = Vec::with_capacity(1024);
     for pattern in &patterns {
         if !pattern.probe.is_empty() {
             probe.extend_from_slice(pattern.probe.as_bytes());
         }
     }
 
-    stream.write_all(&probe).await?;
-    stream.flush().await?;
+    if !probe.is_empty() {
+        stream.write_all(&probe).await?;
+        stream.flush().await?;
+    }
 
-    let mut response = Vec::new();
+    let mut response = Vec::with_capacity(4096);
     let mut total_read = 0;
-    let timeout = std::time::Duration::from_secs(2);
+    let timeout = Duration::from_secs(2);
 
     while total_read < buffer.len() {
         match tokio::time::timeout(timeout, stream.read(&mut buffer[total_read..])).await {

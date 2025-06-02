@@ -24,3 +24,4 @@ base64 = "0.21"
 chrono = "0.4"
 ipnetwork = "0.20"
 trust-dns-resolver = { version = "0.22", features = ["tokio-runtime"] }
+lazy_static = "1.4"

@@ -18,8 +18,11 @@ use base64::Engine;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(short, long)]
-    target: String,
+    #[arg(short, long, required = true)]
+    targets: Vec<String>,
+
+    #[arg(short, long, default_value = "1000-2000")]
+    ports: String,
 
     #[arg(short, long, default_value = "1000")]
     concurrency: usize,
@@ -27,32 +30,24 @@ struct Args {
     #[arg(short, long, default_value = "1000")]
     timeout: u64,
 
-    #[arg(short, long, default_value = "1-1024")]
-    ports: String,
-
-    #[arg(short, long)]
+    #[arg(long)]
     service_detection: bool,
-
-    #[arg(short, long)]
-    subnet: bool,
 }
 
-fn parse_port_range(ports: &str) -> Result<(u16, u16)> {
+fn parse_port_range(ports: &str) -> Result<std::ops::RangeInclusive<u16>> {
     let parts: Vec<&str> = ports.split('-').collect();
     if parts.len() != 2 {
-        return Err(anyhow::anyhow!("Invalid port range format. Use start-end"));
+        return Err(anyhow::anyhow!("Invalid port range format"));
     }
 
-    let start = parts[0].parse::<u16>()
-        .with_context(|| format!("Invalid start port: {}", parts[0]))?;
-    let end = parts[1].parse::<u16>()
-        .with_context(|| format!("Invalid end port: {}", parts[1]))?;
+    let start = parts[0].parse::<u16>()?;
+    let end = parts[1].parse::<u16>()?;
 
     if start > end {
-        return Err(anyhow::anyhow!("Start port cannot be greater than end port"));
+        return Err(anyhow::anyhow!("Start port must be less than or equal to end port"));
     }
 
-    Ok((start, end))
+    Ok(start..=end)
 }
 
 fn resolve_target(target: &str, subnet: bool) -> Result<Vec<IpAddr>> {
@@ -125,50 +120,37 @@ fn generate_issue_template(result: &ScanResult) -> String {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let (start_port, end_port) = parse_port_range(&args.ports)?;
-    let targets = resolve_target(&args.target, args.subnet)?;
-
-    println!("Starting scan on {} targets...", targets.len());
+    let port_range = parse_port_range(&args.ports)?;
 
     let scanner = Scanner::new(
-        targets,
-        start_port..=end_port,
+        args.targets,
+        port_range,
         args.concurrency,
         args.timeout,
         args.service_detection,
     );
 
-    let results = scanner.run().await;
-    let mut service_stats: HashMap<String, u32> = HashMap::new();
+    let results = scanner.run().await?;
 
-    for result in &results {
-        if let Some(service) = &result.service {
-            *service_stats.entry(service.name.clone()).or_insert(0) += 1;
+    if !results.is_empty() {
+        println!("\nScan Results:");
+        for result in &results {
+            println!("{}", format_scan_result(result));
         }
-    }
 
-    println!("\nScan Results:");
-    for result in results {
-        if let Some(service) = result.service {
-            println!("[+] {}:{} is open", result.ip, result.port);
-            println!("    Service: {}", service.name);
-            if let Some(version) = service.version {
-                println!("    Version: {}", version);
+        let mut service_stats: HashMap<String, u32> = HashMap::new();
+        for result in &results {
+            if let Some(service) = &result.service {
+                *service_stats.entry(service.name.clone()).or_insert(0) += 1;
             }
-            if let Some(product) = service.product {
-                println!("    Product: {}", product);
-            }
-            if let Some(os) = service.os_type {
-                println!("    OS: {}", os);
-            }
-        } else {
-            println!("[+] {}:{} is open", result.ip, result.port);
         }
-    }
 
-    println!("\nService Statistics:");
-    for (service, count) in service_stats {
-        println!("  {}: {}", service, count);
+        println!("\nService Statistics:");
+        for (service, count) in service_stats {
+            println!("  {}: {}", service, count);
+        }
+    } else {
+        println!("No open ports found");
     }
 
     Ok(())

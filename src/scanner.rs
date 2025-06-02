@@ -1,22 +1,23 @@
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::ops::RangeInclusive;
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
+use futures::stream::StreamExt;
+use anyhow::{Result, anyhow};
 use indicatif::{ProgressBar, ProgressStyle};
-use futures::stream::{self, StreamExt};
-use anyhow::Result;
-use crossbeam_channel::bounded;
 use crate::types::ScanResult;
 use crate::service_detection::detect_service;
+use crate::patterns::{get_protocol, get_mac_vendor, get_rpc_info, get_services_by_port};
 
 const MAX_RETRIES: u32 = 2;
 const RETRY_DELAY: u64 = 500;
 const CHUNK_SIZE: usize = 1000;
 const SUBNET_CHUNK_SIZE: usize = 100;
+const MAX_CONCURRENCY: usize = 1000;
 
 pub struct Scanner {
-    targets: Vec<IpAddr>,
+    targets: Vec<String>,
     port_range: RangeInclusive<u16>,
     concurrency: usize,
     timeout: u64,
@@ -25,12 +26,15 @@ pub struct Scanner {
 
 impl Scanner {
     pub fn new(
-        targets: Vec<IpAddr>,
+        targets: Vec<String>,
         port_range: RangeInclusive<u16>,
         concurrency: usize,
         timeout: u64,
         service_detection: bool,
     ) -> Self {
+        let concurrency = concurrency.min(MAX_CONCURRENCY);
+        let timeout = timeout.max(500); // Минимальный таймаут 500мс
+
         Self {
             targets,
             port_range,
@@ -40,14 +44,47 @@ impl Scanner {
         }
     }
 
+    async fn resolve_target(target: &str) -> Result<Vec<IpAddr>> {
+        let mut ips = Vec::new();
+        
+        if let Ok(ip) = target.parse::<IpAddr>() {
+            ips.push(ip);
+            return Ok(ips);
+        }
+
+        let socket_addr = format!("{}:80", target);
+        match socket_addr.to_socket_addrs() {
+            Ok(addrs) => {
+                for addr in addrs {
+                    ips.push(addr.ip());
+                }
+                if !ips.is_empty() {
+                    Ok(ips)
+                } else {
+                    Err(anyhow!("Could not resolve hostname: {}", target))
+                }
+            }
+            Err(e) => Err(anyhow!("Failed to resolve hostname {}: {}", target, e)),
+        }
+    }
+
     async fn try_connect(addr: SocketAddr, timeout_ms: u64) -> Result<Option<TcpStream>> {
         for retry in 0..MAX_RETRIES {
             match timeout(
                 Duration::from_millis(timeout_ms),
                 TcpStream::connect(addr),
             ).await {
-                Ok(Ok(stream)) => return Ok(Some(stream)),
-                Ok(Err(_)) => return Ok(None),
+                Ok(Ok(stream)) => {
+                    stream.set_nodelay(true)?;
+                    return Ok(Some(stream));
+                }
+                Ok(Err(e)) => {
+                    if retry < MAX_RETRIES - 1 {
+                        tokio::time::sleep(Duration::from_millis(RETRY_DELAY)).await;
+                        continue;
+                    }
+                    return Ok(None);
+                }
                 Err(_) if retry < MAX_RETRIES - 1 => {
                     tokio::time::sleep(Duration::from_millis(RETRY_DELAY)).await;
                     continue;
@@ -81,61 +118,67 @@ impl Scanner {
         }
     }
 
-    async fn scan_ip_chunk(&self, ips: &[IpAddr]) -> Vec<ScanResult> {
+    async fn scan_ip_chunk(&self, ips: &[IpAddr], pb: &ProgressBar) -> Vec<ScanResult> {
         let mut results = Vec::new();
-        let mut addrs = Vec::new();
+        let mut futures = Vec::with_capacity(ips.len() * self.port_range.clone().count());
 
-        for &ip in ips {
+        for ip in ips {
             for port in self.port_range.clone() {
-                addrs.push(SocketAddr::new(ip, port));
+                let addr = SocketAddr::new(*ip, port);
+                let scanner = self.clone();
+                futures.push(async move {
+                    let result = scanner.scan_addr(addr).await;
+                    pb.inc(1);
+                    result
+                });
             }
         }
 
-        let (progress_tx, progress_rx) = bounded::<(SocketAddr, bool)>(1000);
-        let progress_bar = ProgressBar::new(addrs.len() as u64);
-        progress_bar.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) Scanning {msg}")
-                .unwrap()
-                .progress_chars("#>-"),
-        );
-
-        let progress_bar_clone = progress_bar.clone();
-        std::thread::spawn(move || {
-            while let Ok((addr, _)) = progress_rx.recv() {
-                progress_bar_clone.set_message(format!("{}", addr.ip()));
-                progress_bar_clone.inc(1);
-            }
-        });
-
-        let mut stream = stream::iter(addrs)
-            .map(|addr| {
-                let progress_tx = progress_tx.clone();
-                async move {
-                    let result = self.scan_addr(addr).await;
-                    let _ = progress_tx.send((addr, result.is_ok()));
-                    result
-                }
-            })
+        let stream = futures::stream::iter(futures)
             .buffer_unordered(self.concurrency);
 
-        while let Some(result) = stream.next().await {
-            if let Ok(Some(scan_result)) = result {
-                results.push(scan_result);
-            }
-        }
+        let mut stream_results = stream.collect::<Vec<_>>().await;
+        results.extend(stream_results.drain(..).filter_map(|r| r.unwrap_or(None)));
 
-        progress_bar.finish_and_clear();
         results
     }
 
-    pub async fn run(&self) -> Vec<ScanResult> {
+    pub async fn run(&self) -> Result<Vec<ScanResult>> {
         let mut all_results = Vec::new();
-        let total_ips = self.targets.len();
+        let mut resolved_ips = Vec::new();
+
+        for target in &self.targets {
+            match Self::resolve_target(target).await {
+                Ok(ips) => {
+                    println!("Resolved {} to {} IPs", target, ips.len());
+                    for ip in &ips {
+                        println!("  {}", ip);
+                    }
+                    resolved_ips.extend(ips);
+                }
+                Err(e) => eprintln!("Warning: {}", e),
+            }
+        }
+
+        if resolved_ips.is_empty() {
+            return Err(anyhow!("No valid IP addresses found for any target"));
+        }
+
+        let total_ips = resolved_ips.len();
         let total_ports = self.port_range.end() - self.port_range.start() + 1;
         let total_addrs = (total_ports as usize) * total_ips;
 
-        println!("Total addresses to scan: {}", total_addrs);
+        println!("\nScan configuration:");
+        println!("  Timeout: {}ms", self.timeout);
+        println!("  Concurrency: {}", self.concurrency);
+        println!("  Service detection: {}", self.service_detection);
+        println!("  Total addresses to scan: {}", total_addrs);
+
+        let pb = ProgressBar::new(total_addrs as u64);
+        pb.set_style(ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+            .unwrap()
+            .progress_chars("#>-"));
 
         let chunk_size = if total_ips > 1 {
             SUBNET_CHUNK_SIZE
@@ -143,12 +186,15 @@ impl Scanner {
             CHUNK_SIZE
         };
 
-        for chunk in self.targets.chunks(chunk_size) {
-            let chunk_results = self.scan_ip_chunk(chunk).await;
+        for chunk in resolved_ips.chunks(chunk_size) {
+            let chunk_results = self.scan_ip_chunk(chunk, &pb).await;
             all_results.extend(chunk_results);
         }
 
-        all_results
+        pb.finish_with_message("Scan completed");
+        println!("\nFound {} open ports", all_results.len());
+
+        Ok(all_results)
     }
 }
 
@@ -163,3 +209,4 @@ impl Clone for Scanner {
         }
     }
 } 
+
