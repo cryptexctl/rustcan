@@ -8,13 +8,15 @@ use anyhow::{Result, anyhow};
 use indicatif::{ProgressBar, ProgressStyle};
 use crate::types::ScanResult;
 use crate::service_detection::detect_service;
-use crate::patterns::{get_protocol, get_mac_vendor, get_rpc_info, get_services_by_port};
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 
 const MAX_RETRIES: u32 = 2;
-const RETRY_DELAY: u64 = 500;
+const RETRY_DELAY: u64 = 100;
 const CHUNK_SIZE: usize = 1000;
 const SUBNET_CHUNK_SIZE: usize = 100;
 const MAX_CONCURRENCY: usize = 1000;
+const CONNECT_TIMEOUT: u64 = 200;
 
 pub struct Scanner {
     targets: Vec<String>,
@@ -33,7 +35,7 @@ impl Scanner {
         service_detection: bool,
     ) -> Self {
         let concurrency = concurrency.min(MAX_CONCURRENCY);
-        let timeout = timeout.max(500); // Минимальный таймаут 500мс
+        let timeout = timeout.max(500);
 
         Self {
             targets,
@@ -68,35 +70,21 @@ impl Scanner {
         }
     }
 
-    async fn try_connect(addr: SocketAddr, timeout_ms: u64) -> Result<Option<TcpStream>> {
-        for retry in 0..MAX_RETRIES {
-            match timeout(
-                Duration::from_millis(timeout_ms),
-                TcpStream::connect(addr),
-            ).await {
-                Ok(Ok(stream)) => {
-                    stream.set_nodelay(true)?;
-                    return Ok(Some(stream));
-                }
-                Ok(Err(e)) => {
-                    if retry < MAX_RETRIES - 1 {
-                        tokio::time::sleep(Duration::from_millis(RETRY_DELAY)).await;
-                        continue;
-                    }
-                    return Ok(None);
-                }
-                Err(_) if retry < MAX_RETRIES - 1 => {
-                    tokio::time::sleep(Duration::from_millis(RETRY_DELAY)).await;
-                    continue;
-                }
-                Err(_) => return Ok(None),
+    async fn try_connect(addr: SocketAddr) -> Result<Option<TcpStream>> {
+        match timeout(
+            Duration::from_millis(CONNECT_TIMEOUT),
+            TcpStream::connect(addr),
+        ).await {
+            Ok(Ok(stream)) => {
+                stream.set_nodelay(true)?;
+                Ok(Some(stream))
             }
+            _ => Ok(None),
         }
-        Ok(None)
     }
 
     async fn scan_addr(&self, addr: SocketAddr) -> Result<Option<ScanResult>> {
-        if let Ok(Some(mut stream)) = Self::try_connect(addr, self.timeout).await {
+        if let Ok(Some(mut stream)) = Self::try_connect(addr).await {
             let mut service = None;
             let mut raw_response = String::new();
 
@@ -120,13 +108,18 @@ impl Scanner {
 
     async fn scan_ip_chunk(&self, ips: &[IpAddr], pb: &ProgressBar) -> Vec<ScanResult> {
         let mut results = Vec::new();
+        let semaphore = Arc::new(Semaphore::new(self.concurrency));
         let mut futures = Vec::with_capacity(ips.len() * self.port_range.clone().count());
 
         for ip in ips {
             for port in self.port_range.clone() {
                 let addr = SocketAddr::new(*ip, port);
                 let scanner = self.clone();
+                let sem = semaphore.clone();
+                let pb = pb.clone();
+
                 futures.push(async move {
+                    let _permit = sem.acquire().await.unwrap();
                     let result = scanner.scan_addr(addr).await;
                     pb.inc(1);
                     result
