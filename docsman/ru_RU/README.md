@@ -62,5 +62,3 @@
 ## Быстрые ссылки
 
 - [Основной README проекта](../README.md)
-- [Репозиторий на GitHub](https://github.com/systemxplore/rustcan)
-- [Трекер задач](https://github.com/systemxplore/rustcan/issues) 

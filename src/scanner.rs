@@ -16,7 +16,6 @@ const RETRY_DELAY: u64 = 100;
 const CHUNK_SIZE: usize = 1000;
 const SUBNET_CHUNK_SIZE: usize = 100;
 const MAX_CONCURRENCY: usize = 1000;
-const CONNECT_TIMEOUT: u64 = 200;
 
 pub struct Scanner {
     targets: Vec<String>,
@@ -70,28 +69,43 @@ impl Scanner {
         }
     }
 
-    async fn try_connect(addr: SocketAddr) -> Result<Option<TcpStream>> {
-        match timeout(
-            Duration::from_millis(CONNECT_TIMEOUT),
-            TcpStream::connect(addr),
-        ).await {
-            Ok(Ok(stream)) => {
-                stream.set_nodelay(true)?;
-                Ok(Some(stream))
+    async fn try_connect(addr: SocketAddr, timeout_ms: u64) -> Result<Option<TcpStream>> {
+        let mut attempts = 0;
+
+        while attempts <= MAX_RETRIES {
+            match timeout(
+                Duration::from_millis(timeout_ms),
+                TcpStream::connect(addr),
+            ).await {
+                Ok(Ok(stream)) => {
+                    stream.set_nodelay(true)?;
+                    return Ok(Some(stream));
+                }
+                Ok(Err(e)) => {
+                    if e.kind() == std::io::ErrorKind::ConnectionRefused {
+                        return Ok(None);
+                    }
+                }
+                Err(_) => {}
             }
-            _ => Ok(None),
+
+            attempts += 1;
+
+            if attempts <= MAX_RETRIES {
+                tokio::time::sleep(Duration::from_millis(RETRY_DELAY)).await;
+            }
         }
+
+        Ok(None)
     }
 
     async fn scan_addr(&self, addr: SocketAddr) -> Result<Option<ScanResult>> {
-        if let Ok(Some(mut stream)) = Self::try_connect(addr).await {
+        if let Ok(Some(mut stream)) = Self::try_connect(addr, self.timeout).await {
             let mut service = None;
-            let mut raw_response = String::new();
 
             if self.service_detection {
-                if let Ok((detected_service, response)) = detect_service(&mut stream).await {
+                if let Ok(detected_service) = detect_service(&mut stream, addr.port()).await {
                     service = detected_service;
-                    raw_response = response;
                 }
             }
 
@@ -99,7 +113,6 @@ impl Scanner {
                 ip: addr.ip(),
                 port: addr.port(),
                 service,
-                raw_response,
             }))
         } else {
             Ok(None)

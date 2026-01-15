@@ -62,5 +62,3 @@ This directory contains comprehensive documentation about Rustcan, a fast and ef
 ## Quick Links
 
 - [Main Project README](../README.md)
-- [GitHub Repository](https://github.com/systemxplore/rustcan)
-- [Issue Tracker](https://github.com/systemxplore/rustcan/issues) 

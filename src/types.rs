@@ -21,9 +21,6 @@ pub struct ServicePattern {
     pub os_regex: Option<Regex>,
     pub extra_info_regex: Option<Regex>,
     pub cpe_regex: Option<Regex>,
-    pub vulnerability_patterns: Vec<Regex>,
-    pub total_wait_ms: u64,
-    pub tcp_wrapped_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -31,7 +28,6 @@ pub struct ScanResult {
     pub ip: std::net::IpAddr,
     pub port: u16,
     pub service: Option<Service>,
-    pub raw_response: String,
 }
 
 #[derive(Debug, Clone)]
@@ -39,17 +35,14 @@ pub struct NmapService {
     pub name: String,
     pub port: u16,
     pub protocol: String,
-    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct NmapProbe {
-    pub name: String,
-    pub protocol: String,
     pub probe_string: String,
+    pub matches: Vec<NmapMatch>,
     pub total_wait_ms: u64,
     pub tcp_wrapped_ms: u64,
-    pub matches: Vec<NmapMatch>,
 }
 
 #[derive(Debug, Clone)]
@@ -64,23 +57,8 @@ pub struct NmapMatch {
 }
 
 #[derive(Debug, Clone)]
-pub struct Protocol {
-    pub name: String,
-    pub number: u8,
-    pub aliases: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
 pub struct MacPrefix {
     pub prefix: String,
     pub vendor: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct RpcInfo {
-    pub program: String,
-    pub version: String,
-    pub protocol: String,
-    pub port: Option<u16>,
-    pub description: Option<String>,
-}

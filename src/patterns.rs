@@ -3,34 +3,14 @@ use std::fs;
 use std::path::Path;
 use anyhow::Result;
 use std::collections::HashMap;
-use crate::types::{ServicePattern, NmapService, NmapProbe, NmapMatch, Protocol, MacPrefix, RpcInfo};
+use crate::types::{ServicePattern, NmapService, NmapProbe, NmapMatch, MacPrefix};
 
 lazy_static::lazy_static! {
-    static ref PROTOCOLS: HashMap<String, Protocol> = {
-        let mut map = HashMap::new();
-        if let Ok(protocols) = load_protocols("src/assets/nmap-protocols") {
-            for protocol in protocols {
-                map.insert(protocol.name.clone(), protocol);
-            }
-        }
-        map
-    };
-
     static ref MAC_PREFIXES: HashMap<String, String> = {
         let mut map = HashMap::new();
         if let Ok(prefixes) = load_mac_prefixes("src/assets/nmap-mac-prefixes") {
             for prefix in prefixes {
                 map.insert(prefix.prefix, prefix.vendor);
-            }
-        }
-        map
-    };
-
-    static ref RPC_INFO: HashMap<(String, String), RpcInfo> = {
-        let mut map = HashMap::new();
-        if let Ok(info) = load_rpc_info("src/assets/nmap-rpc") {
-            for rpc in info {
-                map.insert((rpc.program.clone(), rpc.version.clone()), rpc);
             }
         }
         map
@@ -51,6 +31,8 @@ lazy_static::lazy_static! {
         
         patterns.extend(get_ssh_patterns());
         patterns.extend(get_http_patterns());
+        patterns.extend(get_smtp_patterns());
+        patterns.extend(get_imap_patterns());
         patterns.extend(get_ftp_patterns());
         patterns.extend(get_mysql_patterns());
         patterns.extend(get_redis_patterns());
@@ -72,9 +54,6 @@ lazy_static::lazy_static! {
                             os_regex: nmap_match.os_info.as_ref().and_then(|o| Regex::new(o).ok()),
                             extra_info_regex: nmap_match.extra_info.as_ref().and_then(|i| Regex::new(i).ok()),
                             cpe_regex: nmap_match.cpe.as_ref().and_then(|c| Regex::new(c).ok()),
-                            vulnerability_patterns: vec![],
-                            total_wait_ms: probe.total_wait_ms,
-                            tcp_wrapped_ms: probe.tcp_wrapped_ms,
                         };
                         patterns.push(pattern);
                     }
@@ -89,16 +68,8 @@ pub fn get_all_patterns() -> Vec<ServicePattern> {
     SERVICE_PATTERNS.clone()
 }
 
-pub fn get_protocol(name: &str) -> Option<&Protocol> {
-    PROTOCOLS.get(name)
-}
-
 pub fn get_mac_vendor(prefix: &str) -> Option<&String> {
     MAC_PREFIXES.get(prefix)
-}
-
-pub fn get_rpc_info<'a>(program: &'a str, version: &'a str) -> Option<&'static RpcInfo> {
-    RPC_INFO.get(&(program.to_string(), version.to_string()))
 }
 
 pub fn get_services_by_port(port: u16) -> Option<&'static Vec<NmapService>> {
@@ -116,9 +87,6 @@ pub fn get_ssh_patterns() -> Vec<ServicePattern> {
             os_regex: Some(Regex::new(r"OpenSSH.*?([^\r\n]+)").unwrap()),
             extra_info_regex: None,
             cpe_regex: None,
-            vulnerability_patterns: vec![],
-            total_wait_ms: 6000,
-            tcp_wrapped_ms: 3000,
         },
     ]
 }
@@ -134,9 +102,6 @@ pub fn get_http_patterns() -> Vec<ServicePattern> {
             os_regex: None,
             extra_info_regex: None,
             cpe_regex: None,
-            vulnerability_patterns: vec![],
-            total_wait_ms: 6000,
-            tcp_wrapped_ms: 3000,
         },
     ]
 }
@@ -152,9 +117,6 @@ pub fn get_ftp_patterns() -> Vec<ServicePattern> {
             os_regex: None,
             extra_info_regex: None,
             cpe_regex: None,
-            vulnerability_patterns: vec![],
-            total_wait_ms: 6000,
-            tcp_wrapped_ms: 3000,
         },
     ]
 }
@@ -170,9 +132,36 @@ pub fn get_mysql_patterns() -> Vec<ServicePattern> {
             os_regex: None,
             extra_info_regex: None,
             cpe_regex: None,
-            vulnerability_patterns: vec![],
-            total_wait_ms: 6000,
-            tcp_wrapped_ms: 3000,
+        },
+    ]
+}
+
+pub fn get_smtp_patterns() -> Vec<ServicePattern> {
+    vec![
+        ServicePattern {
+            name: "SMTP".to_string(),
+            regex: Regex::new(r"^220.*ESMTP|^220.*SMTP|^220.*OpenSMTPD|^220.*Postfix|^220.*Sendmail|^220.*Microsoft").unwrap(),
+            probe: "EHLO localhost\r\n".to_string(),
+            version_regex: Some(Regex::new(r"220.*?([^\r\n]+)").unwrap()),
+            product_regex: Some(Regex::new(r"220.*?(OpenSMTPD|Postfix|Sendmail|Microsoft|ESMTP)").unwrap()),
+            os_regex: None,
+            extra_info_regex: None,
+            cpe_regex: None,
+        },
+    ]
+}
+
+pub fn get_imap_patterns() -> Vec<ServicePattern> {
+    vec![
+        ServicePattern {
+            name: "IMAP".to_string(),
+            regex: Regex::new(r"^\* OK.*IMAP|^\* OK.*Dovecot|^\* OK.*Cyrus").unwrap(),
+            probe: "A001 CAPABILITY\r\n".to_string(),
+            version_regex: Some(Regex::new(r"IMAP(\d+[^\s]*)").unwrap()),
+            product_regex: Some(Regex::new(r"(Dovecot|Cyrus)").unwrap()),
+            os_regex: None,
+            extra_info_regex: None,
+            cpe_regex: None,
         },
     ]
 }
@@ -181,16 +170,13 @@ pub fn get_redis_patterns() -> Vec<ServicePattern> {
     vec![
         ServicePattern {
             name: "Redis".to_string(),
-            regex: Regex::new(r"^[+\$\*:-]").unwrap(),
+            regex: Regex::new(r"^\+PONG|^\+OK|^\$-|^\*[0-9]|^:[\d-]+|^ERR|^redis_version").unwrap(),
             probe: "PING\r\n".to_string(),
             version_regex: Some(Regex::new(r"redis_version:(\d+\.\d+\.\d+)").unwrap()),
             product_regex: None,
             os_regex: None,
             extra_info_regex: None,
             cpe_regex: None,
-            vulnerability_patterns: vec![],
-            total_wait_ms: 6000,
-            tcp_wrapped_ms: 3000,
         },
     ]
 }
@@ -214,17 +200,10 @@ pub fn load_nmap_services(file_path: &str) -> Result<Vec<NmapService>> {
             let name = parts[0].to_string();
             let port = parts[1].split('/').next().unwrap_or("0").parse::<u16>().unwrap_or(0);
             let protocol = parts[1].split('/').nth(1).unwrap_or("tcp").to_string();
-            let description = if parts.len() > 2 {
-                Some(parts[2..].join(" "))
-            } else {
-                None
-            };
-
             services.push(NmapService {
                 name,
                 port,
                 protocol,
-                description,
             });
         }
     }
@@ -254,17 +233,13 @@ pub fn load_nmap_probes(file_path: &str) -> Result<Vec<NmapProbe>> {
 
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 4 {
-                let name = parts[1].to_string();
-                let protocol = parts[2].to_string();
                 let probe_string = parts[3].trim_matches(|c| c == 'q' || c == '|').to_string();
 
                 current_probe = Some(NmapProbe {
-                    name,
-                    protocol,
                     probe_string,
+                    matches: Vec::new(),
                     total_wait_ms: 6000,
                     tcp_wrapped_ms: 3000,
-                    matches: Vec::new(),
                 });
             }
         } else if line.starts_with("match ") {
@@ -331,42 +306,6 @@ pub fn load_nmap_probes(file_path: &str) -> Result<Vec<NmapProbe>> {
     Ok(probes)
 }
 
-pub fn load_protocols(file_path: &str) -> Result<Vec<Protocol>> {
-    let path = Path::new(file_path);
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-
-    let content = fs::read_to_string(path)?;
-    let mut protocols = Vec::new();
-
-    for line in content.lines() {
-        if line.starts_with('#') || line.trim().is_empty() {
-            continue;
-        }
-
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 2 {
-            let name = parts[0].to_string();
-            if let Ok(number) = parts[1].parse::<u8>() {
-                let aliases = if parts.len() > 2 {
-                    parts[2..].iter().map(|&s| s.to_string()).collect()
-                } else {
-                    Vec::new()
-                };
-
-                protocols.push(Protocol {
-                    name,
-                    number,
-                    aliases,
-                });
-            }
-        }
-    }
-
-    Ok(protocols)
-}
-
 pub fn load_mac_prefixes(file_path: &str) -> Result<Vec<MacPrefix>> {
     let path = Path::new(file_path);
     if !path.exists() {
@@ -395,42 +334,3 @@ pub fn load_mac_prefixes(file_path: &str) -> Result<Vec<MacPrefix>> {
 
     Ok(prefixes)
 }
-
-pub fn load_rpc_info(file_path: &str) -> Result<Vec<RpcInfo>> {
-    let path = Path::new(file_path);
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-
-    let content = fs::read_to_string(path)?;
-    let mut rpc_info = Vec::new();
-
-    for line in content.lines() {
-        if line.starts_with('#') || line.trim().is_empty() {
-            continue;
-        }
-
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 3 {
-            let program = parts[0].to_string();
-            let version = parts[1].to_string();
-            let protocol = parts[2].to_string();
-            let port = parts.get(3).and_then(|p| p.parse::<u16>().ok());
-            let description = if parts.len() > 4 {
-                Some(parts[4..].join(" "))
-            } else {
-                None
-            };
-
-            rpc_info.push(RpcInfo {
-                program,
-                version,
-                protocol,
-                port,
-                description,
-            });
-        }
-    }
-
-    Ok(rpc_info)
-} 

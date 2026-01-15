@@ -1,27 +1,38 @@
-use crate::types::ScanResult;
+use crate::patterns::get_mac_vendor;
+use regex::Regex;
+use std::net::IpAddr;
+use std::process::Command;
 
-pub fn format_scan_result(result: &ScanResult) -> String {
-    let mut output = format!("[+] {}:{} is open", result.ip, result.port);
-    
-    if let Some(service) = &result.service {
-        output.push_str(&format!("\n    Service: {}", service.name));
-        if let Some(version) = &service.version {
-            output.push_str(&format!("\n    Version: {}", version));
-        }
-        if let Some(product) = &service.product {
-            output.push_str(&format!("\n    Product: {}", product));
-        }
-        if let Some(os_type) = &service.os_type {
-            output.push_str(&format!("\n    OS: {}", os_type));
-        }
-        if let Some(extra_info) = &service.extra_info {
-            if !extra_info.is_empty() && extra_info.len() < 100 {
-                output.push_str(&format!("\n    Extra: {}", extra_info));
-            }
-        }
-    } else {
-        output.push_str("\n    Service: unknown (please report fingerprint on issues)");
+fn extract_mac_from_arp(output: &str) -> Option<String> {
+    let re = Regex::new(r"(?i)([0-9a-f]{2}(?::[0-9a-f]{2}){5})").ok()?;
+    let caps = re.captures(output)?;
+    Some(caps.get(1)?.as_str().to_string())
+}
+
+pub fn get_mac_vendor_for_ip(ip: IpAddr) -> Option<String> {
+    let output = Command::new("arp")
+        .arg("-n")
+        .arg(ip.to_string())
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
     }
-    
-    output
-} 
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mac = extract_mac_from_arp(&stdout)?;
+
+    let hex: String = mac
+        .chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .collect::<String>()
+        .to_uppercase();
+
+    if hex.len() < 6 {
+        return None;
+    }
+
+    let prefix = &hex[0..6];
+    get_mac_vendor(prefix).cloned()
+}

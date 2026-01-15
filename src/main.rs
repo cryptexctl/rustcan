@@ -7,13 +7,11 @@ mod patterns;
 use std::net::IpAddr;
 use std::str::FromStr;
 use clap::Parser;
-use anyhow::{Result, Context};
+use anyhow::Result;
 use std::collections::HashMap;
 use crate::scanner::Scanner;
 use crate::types::ScanResult;
-use ipnetwork::IpNetwork;
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
+use crate::utils::get_mac_vendor_for_ip;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -50,20 +48,6 @@ fn parse_port_range(ports: &str) -> Result<std::ops::RangeInclusive<u16>> {
     Ok(start..=end)
 }
 
-fn resolve_target(target: &str, subnet: bool) -> Result<Vec<IpAddr>> {
-    if subnet {
-        if let Ok(network) = IpNetwork::from_str(target) {
-            return Ok(network.iter().collect());
-        }
-    }
-
-    if let Ok(ip) = IpAddr::from_str(target) {
-        return Ok(vec![ip]);
-    }
-
-    Err(anyhow::anyhow!("Invalid target: {}", target))
-}
-
 fn format_scan_result(result: &ScanResult) -> String {
     let mut output = format!("[+] {}:{} is open", result.ip, result.port);
     
@@ -82,39 +66,8 @@ fn format_scan_result(result: &ScanResult) -> String {
             output.push_str(&format!("\n    Extra Info: {}", extra_info));
         }
     }
-    
+
     output
-}
-
-fn generate_issue_template(result: &ScanResult) -> String {
-    let fingerprint = if !result.raw_response.is_empty() {
-        STANDARD.encode(result.raw_response.as_bytes())
-    } else {
-        "No raw response available".to_string()
-    };
-
-    format!(
-        "## Service Fingerprint Report\n\n\
-        ### Target Information\n\
-        - IP: {}\n\
-        - Port: {}\n\
-        - Service: {}\n\n\
-        ### Raw Response (Base64)\n\
-        ```\n\
-        {}\n\
-        ```\n\n\
-        ### Additional Information\n\
-        - Scanner Version: {}\n\
-        - Scan Date: {}\n\n\
-        ### Description\n\
-        Please add a description of the service behavior and any additional context.\n",
-        result.ip,
-        result.port,
-        result.service.as_ref().map(|s| s.name.clone()).unwrap_or_else(|| "unknown".to_string()),
-        fingerprint,
-        env!("CARGO_PKG_VERSION"),
-        chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-    )
 }
 
 #[tokio::main]
@@ -133,6 +86,19 @@ async fn main() -> Result<()> {
     let results = scanner.run().await?;
 
     if !results.is_empty() {
+        let mut mac_cache: HashMap<IpAddr, String> = HashMap::new();
+        // Собираем MAC-вендоров по уникальным IP
+        for result in &results {
+            if mac_cache.contains_key(&result.ip) {
+                continue;
+            }
+            if let Ok(ip) = IpAddr::from_str(&result.ip.to_string()) {
+                if let Some(vendor) = get_mac_vendor_for_ip(ip) {
+                    mac_cache.insert(ip, vendor);
+                }
+            }
+        }
+
         println!("\nScan Results:");
         for result in &results {
             println!("{}", format_scan_result(result));
@@ -148,6 +114,13 @@ async fn main() -> Result<()> {
         println!("\nService Statistics:");
         for (service, count) in service_stats {
             println!("  {}: {}", service, count);
+        }
+
+        if !mac_cache.is_empty() {
+            println!("\nHost MAC Vendors:");
+            for (ip, vendor) in mac_cache {
+                println!("  {}: {}", ip, vendor);
+            }
         }
     } else {
         println!("No open ports found");
