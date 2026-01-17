@@ -5,6 +5,7 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 use futures::stream::StreamExt;
 use anyhow::{Result, anyhow};
+use ipnetwork::IpNetwork;
 use indicatif::{ProgressBar, ProgressStyle};
 use crate::types::ScanResult;
 use crate::service_detection::detect_service;
@@ -16,6 +17,7 @@ const RETRY_DELAY: u64 = 100;
 const CHUNK_SIZE: usize = 1000;
 const SUBNET_CHUNK_SIZE: usize = 100;
 const MAX_CONCURRENCY: usize = 1000;
+const MAX_CIDR_HOSTS: u32 = 65536;
 
 pub struct Scanner {
     targets: Vec<String>,
@@ -51,6 +53,45 @@ impl Scanner {
         if let Ok(ip) = target.parse::<IpAddr>() {
             ips.push(ip);
             return Ok(ips);
+        }
+
+        if target.contains('/') {
+            match target.parse::<IpNetwork>() {
+                Ok(network) => {
+                    let host_count = match network {
+                        IpNetwork::V4(net) => {
+                            let prefix_len = net.prefix();
+                            if prefix_len > 31 {
+                                1u64
+                            } else {
+                                1u64 << (32 - prefix_len)
+                            }
+                        }
+                        IpNetwork::V6(net) => {
+                            let prefix_len = net.prefix();
+                            if prefix_len > 127 {
+                                1u64
+                            } else if prefix_len < 64 {
+                                // very large IPv6 ranges
+                                u64::MAX
+                            } else {
+                                1u64 << (128 - prefix_len).min(63)
+                            }
+                        }
+                    };
+
+                    if host_count > MAX_CIDR_HOSTS as u64 {
+                        return Err(anyhow!(
+                            "CIDR range {} too large ({} hosts). Max: {} (/16 for IPv4)",
+                            target, host_count, MAX_CIDR_HOSTS
+                        ));
+                    }
+                    return Ok(network.iter().collect());
+                }
+                Err(e) => {
+                    return Err(anyhow!("Invalid CIDR notation '{}': {}", target, e));
+                }
+            }
         }
 
         let socket_addr = format!("{}:80", target);
