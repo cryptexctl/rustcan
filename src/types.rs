@@ -1,5 +1,5 @@
-use serde::Serialize;
 use regex::Regex;
+use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Service {
@@ -61,4 +61,3 @@ pub struct MacPrefix {
     pub prefix: String,
     pub vendor: String,
 }
-

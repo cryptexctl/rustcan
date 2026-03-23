@@ -1,5 +1,5 @@
+pub mod patterns;
 pub mod scanner;
 pub mod service_detection;
-pub mod patterns;
+pub mod types;
 pub mod utils;
-pub mod types; 

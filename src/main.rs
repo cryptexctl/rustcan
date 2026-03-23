@@ -1,17 +1,28 @@
+mod patterns;
 mod scanner;
 mod service_detection;
-mod utils;
 mod types;
-mod patterns;
+mod utils;
 
-use std::net::IpAddr;
-use std::str::FromStr;
-use clap::Parser;
-use anyhow::Result;
-use std::collections::HashMap;
 use crate::scanner::Scanner;
 use crate::types::ScanResult;
 use crate::utils::get_mac_vendor_for_ip;
+use anyhow::Result;
+use clap::Parser;
+use std::collections::HashMap;
+use std::net::IpAddr;
+use std::str::FromStr;
+
+/*
+ * Default concurrency based on typical ulimit -n values.
+ * macOS: ~256 default, so we use 200 to leave headroom for other FDs.
+ * Linux: usually 1024+ default, so we can go higher.
+ */
+#[cfg(target_os = "macos")]
+const DEFAULT_CONCURRENCY: usize = 200;
+
+#[cfg(not(target_os = "macos"))]
+const DEFAULT_CONCURRENCY: usize = 1000;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -22,7 +33,7 @@ struct Args {
     #[arg(short, long, default_value = "1000-2000")]
     ports: String,
 
-    #[arg(short, long, default_value = "1000")]
+    #[arg(short, long, default_value_t = DEFAULT_CONCURRENCY)]
     concurrency: usize,
 
     #[arg(short, long, default_value = "1000")]
@@ -42,7 +53,9 @@ fn parse_port_range(ports: &str) -> Result<std::ops::RangeInclusive<u16>> {
     let end = parts[1].parse::<u16>()?;
 
     if start > end {
-        return Err(anyhow::anyhow!("Start port must be less than or equal to end port"));
+        return Err(anyhow::anyhow!(
+            "Start port must be less than or equal to end port"
+        ));
     }
 
     Ok(start..=end)
@@ -50,7 +63,7 @@ fn parse_port_range(ports: &str) -> Result<std::ops::RangeInclusive<u16>> {
 
 fn format_scan_result(result: &ScanResult) -> String {
     let mut output = format!("[+] {}:{} is open", result.ip, result.port);
-    
+
     if let Some(service) = &result.service {
         output.push_str(&format!("\n    Service: {}", service.name));
         if let Some(version) = &service.version {

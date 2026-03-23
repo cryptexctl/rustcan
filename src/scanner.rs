@@ -1,22 +1,21 @@
+use crate::service_detection::detect_service;
+use crate::types::ScanResult;
+use anyhow::{Result, anyhow};
+use futures::stream::StreamExt;
+use indicatif::{ProgressBar, ProgressStyle};
+use ipnetwork::IpNetwork;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
-use tokio::time::timeout;
-use futures::stream::StreamExt;
-use anyhow::{Result, anyhow};
-use ipnetwork::IpNetwork;
-use indicatif::{ProgressBar, ProgressStyle};
-use crate::types::ScanResult;
-use crate::service_detection::detect_service;
-use std::sync::Arc;
 use tokio::sync::Semaphore;
+use tokio::time::timeout;
 
-const MAX_RETRIES: u32 = 2;
-const RETRY_DELAY: u64 = 100;
+const MAX_RETRIES: u32 = 1;
+const RETRY_DELAY: u64 = 50;
 const CHUNK_SIZE: usize = 1000;
 const SUBNET_CHUNK_SIZE: usize = 100;
-const MAX_CONCURRENCY: usize = 1000;
 const MAX_CIDR_HOSTS: u32 = 65536;
 
 pub struct Scanner {
@@ -35,7 +34,6 @@ impl Scanner {
         timeout: u64,
         service_detection: bool,
     ) -> Self {
-        let concurrency = concurrency.min(MAX_CONCURRENCY);
         let timeout = timeout.max(500);
 
         Self {
@@ -49,7 +47,7 @@ impl Scanner {
 
     async fn resolve_target(target: &str) -> Result<Vec<IpAddr>> {
         let mut ips = Vec::new();
-        
+
         if let Ok(ip) = target.parse::<IpAddr>() {
             ips.push(ip);
             return Ok(ips);
@@ -83,7 +81,9 @@ impl Scanner {
                     if host_count > MAX_CIDR_HOSTS as u64 {
                         return Err(anyhow!(
                             "CIDR range {} too large ({} hosts). Max: {} (/16 for IPv4)",
-                            target, host_count, MAX_CIDR_HOSTS
+                            target,
+                            host_count,
+                            MAX_CIDR_HOSTS
                         ));
                     }
                     return Ok(network.iter().collect());
@@ -114,12 +114,9 @@ impl Scanner {
         let mut attempts = 0;
 
         while attempts <= MAX_RETRIES {
-            match timeout(
-                Duration::from_millis(timeout_ms),
-                TcpStream::connect(addr),
-            ).await {
+            match timeout(Duration::from_millis(timeout_ms), TcpStream::connect(addr)).await {
                 Ok(Ok(stream)) => {
-                    stream.set_nodelay(true)?;
+                    let _ = stream.set_nodelay(true);
                     return Ok(Some(stream));
                 }
                 Ok(Err(e)) => {
@@ -127,11 +124,10 @@ impl Scanner {
                         return Ok(None);
                     }
                 }
-                Err(_) => {}
+                Err(_) => {} /* timeout */
             }
 
             attempts += 1;
-
             if attempts <= MAX_RETRIES {
                 tokio::time::sleep(Duration::from_millis(RETRY_DELAY)).await;
             }
@@ -181,8 +177,7 @@ impl Scanner {
             }
         }
 
-        let stream = futures::stream::iter(futures)
-            .buffer_unordered(self.concurrency);
+        let stream = futures::stream::iter(futures).buffer_unordered(self.concurrency);
 
         let mut stream_results = stream.collect::<Vec<_>>().await;
         results.extend(stream_results.drain(..).filter_map(|r| r.unwrap_or(None)));
@@ -222,10 +217,14 @@ impl Scanner {
         println!("  Total addresses to scan: {}", total_addrs);
 
         let pb = ProgressBar::new(total_addrs as u64);
-        pb.set_style(ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
-            .unwrap()
-            .progress_chars("#>-"));
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template(
+                    "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+                )
+                .unwrap()
+                .progress_chars("#>-"),
+        );
 
         let chunk_size = if total_ips > 1 {
             SUBNET_CHUNK_SIZE
@@ -255,5 +254,4 @@ impl Clone for Scanner {
             service_detection: self.service_detection,
         }
     }
-} 
-
+}

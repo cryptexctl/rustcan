@@ -1,10 +1,10 @@
+use crate::patterns::{get_all_patterns, get_services_by_port};
+use crate::types::{Service, ServicePattern};
+use anyhow::Result;
 use std::io;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use anyhow::Result;
-use crate::types::{Service, ServicePattern};
-use crate::patterns::{get_all_patterns, get_services_by_port};
-use std::time::Duration;
 
 async fn read_response(stream: &mut TcpStream, timeout: Duration) -> Result<String> {
     let mut buffer = [0u8; 4096];
@@ -80,7 +80,7 @@ pub async fn detect_service(stream: &mut TcpStream, port: u16) -> Result<Option<
 
     let mut unique_probes: Vec<&ServicePattern> = Vec::new();
     let mut seen_probes = std::collections::HashSet::new();
-    
+
     for pattern in &patterns {
         if !pattern.probe.is_empty() && !seen_probes.contains(&pattern.probe) {
             seen_probes.insert(pattern.probe.clone());
