@@ -33,10 +33,13 @@ struct Args {
     #[arg(short, long, default_value = "1000-2000")]
     ports: String,
 
+    /// Number of concurrent connections. Higher values = faster but may miss ports.
+    /// Recommended: 500-2000 for accuracy. Also limited by ulimit -n.
     #[arg(short, long, default_value_t = DEFAULT_CONCURRENCY)]
     concurrency: usize,
 
-    #[arg(short, long, default_value = "1000")]
+    /// Connection timeout in ms. Lower = faster but may miss slow services.
+    #[arg(short = 'T', long, default_value = "1000")]
     timeout: u64,
 
     #[arg(long)]
